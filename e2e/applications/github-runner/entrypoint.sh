@@ -10,9 +10,18 @@ set -e
 # LXC compatibility: runner expects to be in /home/runner (no Docker WORKDIR)
 cd /home/runner
 
-# Wait for network (LXC DHCP may not be ready when entrypoint starts as PID 1)
+# LXC with lxc.init.cmd bypasses the normal init system, so no DHCP client runs.
+# Find the first non-lo interface and request a DHCP lease.
+NET_IF=$(ls /sys/class/net/ | grep -v lo | head -1)
+if [ -n "$NET_IF" ] && ! ip addr show "$NET_IF" | grep -q 'inet '; then
+    echo "Requesting DHCP lease for $NET_IF..."
+    ip link set "$NET_IF" up 2>/dev/null || true
+    dhclient -1 -4 "$NET_IF" 2>/dev/null || true
+fi
+
+# Wait for external connectivity
 echo "Waiting for network..."
-for i in $(seq 1 30); do
+for i in $(seq 1 15); do
     if curl -sf --max-time 2 https://api.github.com >/dev/null 2>&1; then
         echo "Network ready"
         break
