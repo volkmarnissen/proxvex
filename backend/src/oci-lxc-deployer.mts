@@ -173,6 +173,7 @@ async function startWebApp(
     try {
       const cert = readFileSync(certPath, "utf-8");
       const key = readFileSync(keyPath, "utf-8");
+      logger.info("SSL certificates loaded", { certBytes: cert.length, keyBytes: key.length });
       const httpsServer = webApp.createHttpsServer({ key, cert });
       httpsServer.listen(httpsPort, () => {
         logger.info("HTTPS server started", { port: httpsPort });
@@ -181,6 +182,8 @@ async function startWebApp(
     } catch (err: any) {
       logger.error("Failed to start HTTPS server", { error: err?.message });
     }
+  } else {
+    logger.info("HTTPS disabled: certificate files not found");
   }
 
   let httpFallbackServer: http.Server | undefined;
