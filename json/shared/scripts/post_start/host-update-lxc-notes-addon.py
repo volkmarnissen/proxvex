@@ -24,20 +24,21 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import quote, unquote
+from urllib.parse import unquote
 
 # Library functions are prepended - these are available:
 # - parse_lxc_config(conf_text) -> LxcConfig
 # - ADDON_MARKER_RE, etc.
 
+# Template variables (replaced by backend before execution)
+VM_ID_RAW = "{{ vm_id }}"
+ADDON_ID_RAW = "{{ addon_id }}"
+ADDON_ACTION_RAW = "{{ addon_action }}"
 
-def get_param(name: str) -> str | None:
-    """Get template parameter value, returns None if NOT_DEFINED."""
-    val = "{{ " + name + " }}"
-    # If template wasn't processed, the literal {{ name }} remains
-    if val.startswith("{{") and val.endswith("}}"):
-        return None
-    if val == "NOT_DEFINED" or val == "":
+
+def _normalize(val: str) -> str | None:
+    """Return None if template variable was not substituted or empty."""
+    if not val or val == "NOT_DEFINED":
         return None
     return val
 
@@ -51,16 +52,39 @@ def read_config_file(vm_id: str) -> str:
 
 
 def extract_description_from_config(conf_text: str) -> str:
-    """Extract the description field from config, URL-decoded."""
-    match = re.search(r"^description:\s*(.*)$", conf_text, re.MULTILINE)
-    if not match:
-        return ""
+    """Extract the description field from config, URL-decoded.
 
-    raw_desc = match.group(1)
-    # Proxmox encodes newlines as literal \n and URL-encodes special chars
-    normalized = raw_desc.replace("\\n", "\n")
-    decoded = unquote(normalized)
-    return decoded
+    Handles two Proxmox VE storage formats:
+    1. Single-line: description: URL-encoded content (+ for spaces, %XX for special chars)
+    2. Multi-line comment: #-prefixed lines at the top of the file, each URL-encoded
+    """
+    # Format 1: single-line "description:" field
+    match = re.search(r"^description:\s*(.*)$", conf_text, re.MULTILINE)
+    if match:
+        raw_desc = match.group(1)
+        # Proxmox may encode newlines as literal \n
+        normalized = raw_desc.replace("\\n", "\n")
+        # Proxmox uses + for spaces in single-line format
+        decoded = unquote(normalized.replace("+", " "))
+        return decoded
+
+    # Format 2: #-prefixed comment lines at the top of the file
+    # PVE stores multi-line descriptions as #-prefixed lines before the first config entry
+    lines = conf_text.split("\n")
+    desc_lines: list[str] = []
+    for line in lines:
+        if line.startswith("#"):
+            # Strip the # prefix and URL-decode
+            desc_lines.append(unquote(line[1:]))
+        elif line.strip() == "":
+            continue  # Skip blank lines between comment blocks
+        else:
+            break  # Hit a real config entry (e.g., "arch: amd64")
+
+    if desc_lines:
+        return "\n".join(desc_lines)
+
+    return ""
 
 
 def build_addon_marker(addon_id: str) -> str:
@@ -129,9 +153,9 @@ def update_container_description(vm_id: str, new_description: str) -> None:
 
 
 def main() -> None:
-    vm_id = get_param("vm_id")
-    addon_id = get_param("addon_id")
-    addon_action = get_param("addon_action") or "add"
+    vm_id = _normalize(VM_ID_RAW)
+    addon_id = _normalize(ADDON_ID_RAW)
+    addon_action = _normalize(ADDON_ACTION_RAW) or "add"
 
     if not vm_id:
         print("Error: vm_id is required", file=sys.stderr)
