@@ -7,7 +7,8 @@ import { ApiUri } from "../types.mjs";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-interface BuildInfo {
+export interface BuildInfo {
+  version: string;
   gitHash: string;
   buildTime: string;
   dirty: boolean;
@@ -19,11 +20,11 @@ function loadBuildInfo(): BuildInfo {
     const infoPath = join(__dirname, "..", "build-info.json");
     return JSON.parse(readFileSync(infoPath, "utf-8")) as BuildInfo;
   } catch {
-    return { gitHash: "unknown", buildTime: "unknown", dirty: false };
+    return { version: "unknown", gitHash: "unknown", buildTime: "unknown", dirty: false };
   }
 }
 
-const buildInfo = loadBuildInfo();
+export const buildInfo = loadBuildInfo();
 const startTime = new Date().toISOString();
 
 /**

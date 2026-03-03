@@ -59,7 +59,9 @@ jobs:
             # No version given — read from package.json
             resolved="$(node -p "require('./package.json').version")"
           elif echo "$input_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-            # Explicit semver (e.g. from Release Please) — use directly
+            # Explicit semver (e.g. from Release Please) — update package.json and manifest
+            npm version "$input_version" --no-git-tag-version --allow-same-version
+            echo "{\".\": \"$input_version\"}" > .release-please-manifest.json
             resolved="$input_version"
           else
             # Bump keyword (patch|minor|major) — use npm version

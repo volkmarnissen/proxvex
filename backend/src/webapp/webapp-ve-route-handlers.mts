@@ -22,6 +22,7 @@ import {
 } from "@src/backend-types.mjs";
 import { PersistenceManager } from "@src/persistence/persistence-manager.mjs";
 import { getErrorStatusCode, serializeError } from "./webapp-error-utils.mjs";
+import { buildInfo } from "./webapp-version-routes.mjs";
 import { VMInstallContext } from "@src/context-manager.mjs";
 import {
   determineExecutionMode,
@@ -257,6 +258,7 @@ export class WebAppVeRouteHandlers {
         `http://${os.hostname()}:${deployerPort}`;
       defaults.set("deployer_base_url", deployerUrl);
       defaults.set("ve_context_key", veContextKey);
+      defaults.set("oci_image_tag", buildInfo.version);
 
       // Icon data for embedding in notes (Data URL avoids mixed content issues)
       // Always use readApplicationIcon() which normalizes SVG size for notes display

@@ -14,6 +14,13 @@
         "debian",
         "ubuntu"
       ]
+    },
+    {
+      "id": "oci_image_tag",
+      "name": "Version",
+      "type": "string",
+      "advanced": true,
+      "description": "Auto-injected by backend: deployer version from package.json"
     }
   ],
   "commands": [
@@ -21,7 +28,8 @@
       "name": "Latest OS Template",
       "script": "host-get-latest-os-template.sh",
       "outputs": [
-        "template_path"
+        "template_path",
+        "oci_image_tag"
       ]
     }
   ]
