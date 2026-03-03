@@ -11,8 +11,10 @@ import { DocumentationGenerator } from "./documentation-generator.mjs";
 import { VEWebApp } from "./webapp/webapp.mjs";
 import type { TaskType } from "./types.mjs";
 import { createLogger } from "./logger/index.mjs";
+import { buildInfo } from "./webapp/webapp-version-routes.mjs";
 
 const logger = createLogger("main");
+logger.info("oci-lxc-deployer started", { version: buildInfo.version });
 
 interface ParsedArgs {
   command?: string;

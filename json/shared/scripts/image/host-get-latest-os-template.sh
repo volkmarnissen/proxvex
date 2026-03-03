@@ -17,6 +17,8 @@
 STORAGE="local"
 # Template keyword
 OSTYPE={{ ostype }}
+# Deployer version (auto-injected by backend)
+OCI_IMAGE_TAG={{ oci_image_tag }}
 
 # Find the latest OSTYPE template from the list of available templates
 TEMPLATE=$(pveam available 2>&1 | awk -v OSTYPE="$OSTYPE" 'index($2, OSTYPE)==1 {print $2}' | sort -V | tail -n 1)
@@ -43,5 +45,5 @@ if [ -z "$template_path" ]; then
   exit 1
 fi
 
-# Output the template path in JSON format to stdout
-echo '[{"id":"template_path","value":"'$template_path'"}]'
+# Output the template path and version in JSON format to stdout
+echo '[{"id":"template_path","value":"'$template_path'"},{"id":"oci_image_tag","value":"'$OCI_IMAGE_TAG'"}]'
