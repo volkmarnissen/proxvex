@@ -1,0 +1,12 @@
+{
+  "default": {
+    "depends_on": ["zitadel/default"],
+    "addons": ["addon-oidc"],
+    "cli_timeout": 900,
+    "verify": {
+      "oidc_enabled": true,
+      "oidc_api_protected": true,
+      "oidc_machine_login": true
+    }
+  }
+}

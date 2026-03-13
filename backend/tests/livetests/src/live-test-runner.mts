@@ -653,7 +653,205 @@ class Verifier {
     this.assert(result === "exists", `[${vmId}] File exists: ${filePath}`);
   }
 
-  async runAll(vmId: number, hostname: string, verify: Record<string, boolean | number | string>) {
+  private getContainerIp(vmId: number): string | null {
+    const ip = this.ssh(
+      `pct exec ${vmId} -- ip -4 addr show eth0 | grep inet | awk '{print $2}' | cut -d/ -f1`,
+    ).trim();
+    return ip || null;
+  }
+
+  oidcEnabled(vmId: number) {
+    const ip = this.getContainerIp(vmId);
+    if (!ip) {
+      logFail(`[${vmId}] Cannot determine container IP for OIDC check`);
+      this.failed++;
+      return;
+    }
+    const result = this.ssh(
+      `curl -sf --connect-timeout 5 http://${ip}:3000/api/auth/config`,
+      20000,
+    );
+    let ok = false;
+    try {
+      const parsed = JSON.parse(result);
+      ok = parsed.oidcEnabled === true;
+    } catch { /* ignore */ }
+    this.assert(ok, `[${vmId}] OIDC is enabled (/api/auth/config)`);
+  }
+
+  oidcApiProtected(vmId: number) {
+    const ip = this.getContainerIp(vmId);
+    if (!ip) {
+      logFail(`[${vmId}] Cannot determine container IP for OIDC API protection check`);
+      this.failed++;
+      return;
+    }
+    const statusCode = this.ssh(
+      `curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${ip}:3000/api/applications`,
+      20000,
+    ).trim();
+    this.assert(statusCode === "401", `[${vmId}] API is protected (status=${statusCode}, expected 401)`);
+  }
+
+  async oidcMachineLogin(vmId: number, planned: PlannedScenario[]) {
+    const ip = this.getContainerIp(vmId);
+    if (!ip) {
+      logFail(`[${vmId}] Cannot determine container IP for OIDC machine login`);
+      this.failed++;
+      return;
+    }
+
+    // Find the Zitadel dependency VM
+    const zitadelVm = planned.find((p) => p.scenario.application === "zitadel");
+    if (!zitadelVm) {
+      logFail(`[${vmId}] No Zitadel dependency found in planned scenarios`);
+      this.failed++;
+      return;
+    }
+
+    const zitadelIp = this.getContainerIp(zitadelVm.vmId);
+    if (!zitadelIp) {
+      logFail(`[${vmId}] Cannot determine Zitadel container IP`);
+      this.failed++;
+      return;
+    }
+
+    // Read PAT from Zitadel container
+    const pat = this.ssh(
+      `pct exec ${zitadelVm.vmId} -- cat /bootstrap/login-client.pat`,
+    ).trim();
+    if (!pat) {
+      logFail(`[${vmId}] Cannot read Zitadel PAT from VM ${zitadelVm.vmId}`);
+      this.failed++;
+      return;
+    }
+
+    const issuerUrl = `http://${zitadelIp}:8080`;
+    const mgmtApi = `${issuerUrl}/management/v1`;
+    const curlAuth = `curl -sf -H 'Authorization: Bearer ${pat}' -H 'Content-Type: application/json'`;
+
+    // 1. Find the project (search for "proxmox" project)
+    const projectSearch = this.ssh(
+      `${curlAuth} -X POST ${mgmtApi}/projects/_search -d '{"queries":[{"nameQuery":{"name":"proxmox","method":"TEXT_QUERY_METHOD_EQUALS"}}]}'`,
+      20000,
+    );
+    let projectId: string | undefined;
+    try {
+      const parsed = JSON.parse(projectSearch);
+      projectId = parsed.result?.[0]?.id;
+    } catch { /* ignore */ }
+
+    if (!projectId) {
+      logFail(`[${vmId}] Cannot find Zitadel project 'proxmox'`);
+      this.failed++;
+      return;
+    }
+    logOk(`[${vmId}] Found Zitadel project: ${projectId}`);
+
+    // 2. Ensure role 'admin' exists in project
+    const roleBody = JSON.stringify({ roleKey: "admin", displayName: "Admin", group: "deployer" });
+    this.ssh(
+      `${curlAuth} -X POST ${mgmtApi}/projects/${projectId}/roles -d '${roleBody}' 2>/dev/null || true`,
+      15000,
+    );
+
+    // 3. Create a Machine User
+    const machineBody = JSON.stringify({
+      userName: "oidc-test-machine",
+      name: "OIDC Test Machine",
+      accessTokenType: "ACCESS_TOKEN_TYPE_JWT",
+    });
+    const machineResult = this.ssh(
+      `${curlAuth} -X POST ${mgmtApi}/users/machine -d '${machineBody}'`,
+      15000,
+    );
+    let machineUserId: string | undefined;
+    try {
+      const parsed = JSON.parse(machineResult);
+      machineUserId = parsed.userId;
+    } catch { /* ignore */ }
+
+    if (!machineUserId) {
+      // User might already exist, search for it
+      const userSearch = this.ssh(
+        `${curlAuth} -X POST ${mgmtApi}/users/_search -d '{"queries":[{"userNameQuery":{"userName":"oidc-test-machine","method":"TEXT_QUERY_METHOD_EQUALS"}}]}'`,
+        15000,
+      );
+      try {
+        const parsed = JSON.parse(userSearch);
+        machineUserId = parsed.result?.[0]?.id;
+      } catch { /* ignore */ }
+    }
+
+    if (!machineUserId) {
+      logFail(`[${vmId}] Cannot create/find machine user`);
+      this.failed++;
+      return;
+    }
+    logOk(`[${vmId}] Machine user ID: ${machineUserId}`);
+
+    // 4. Generate client secret for machine user
+    const secretResult = this.ssh(
+      `${curlAuth} -X PUT ${mgmtApi}/users/${machineUserId}/secret`,
+      15000,
+    );
+    let clientId: string | undefined;
+    let clientSecret: string | undefined;
+    try {
+      const parsed = JSON.parse(secretResult);
+      clientId = parsed.clientId;
+      clientSecret = parsed.clientSecret;
+    } catch { /* ignore */ }
+
+    if (!clientId || !clientSecret) {
+      logFail(`[${vmId}] Cannot generate machine user credentials`);
+      this.failed++;
+      return;
+    }
+
+    // 5. Grant admin role to machine user
+    const grantBody = JSON.stringify({
+      projectId,
+      roleKeys: ["admin"],
+    });
+    this.ssh(
+      `${curlAuth} -X POST ${mgmtApi}/users/${machineUserId}/grants -d '${grantBody}' 2>/dev/null || true`,
+      15000,
+    );
+
+    // 6. Fetch JWT via Client Credentials Grant
+    const tokenResult = this.ssh(
+      `curl -sf -X POST -u '${clientId}:${clientSecret}' -d 'grant_type=client_credentials&scope=openid' ${issuerUrl}/oauth/v2/token`,
+      20000,
+    );
+    let accessToken: string | undefined;
+    try {
+      const parsed = JSON.parse(tokenResult);
+      accessToken = parsed.access_token;
+    } catch { /* ignore */ }
+
+    if (!accessToken) {
+      logFail(`[${vmId}] Cannot obtain JWT via Client Credentials Grant`);
+      this.failed++;
+      return;
+    }
+    logOk(`[${vmId}] Obtained JWT access token`);
+
+    // 7. Call deployer API with JWT
+    const apiResult = this.ssh(
+      `curl -sf -H 'Authorization: Bearer ${accessToken}' --connect-timeout 5 http://${ip}:3000/api/applications`,
+      20000,
+    );
+    let apiOk = false;
+    try {
+      const parsed = JSON.parse(apiResult);
+      apiOk = Array.isArray(parsed);
+    } catch { /* ignore */ }
+
+    this.assert(apiOk, `[${vmId}] Machine user API call with JWT succeeded`);
+  }
+
+  async runAll(vmId: number, hostname: string, verify: Record<string, boolean | number | string>, planned?: PlannedScenario[]) {
     const failedBefore = this.failed;
 
     if (verify.container_running) this.containerRunning(vmId);
@@ -665,6 +863,9 @@ class Verifier {
     if (verify.pg_ssl_on) this.pgSslOn(vmId);
     if (verify.db_ssl_connection) this.dbSslConnection(vmId);
     if (typeof verify.file_exists === "string") this.fileExists(vmId, verify.file_exists);
+    if (verify.oidc_enabled) this.oidcEnabled(vmId);
+    if (verify.oidc_api_protected) this.oidcApiProtected(vmId);
+    if (verify.oidc_machine_login && planned) await this.oidcMachineLogin(vmId, planned);
 
     // Dump docker logs if any verification failed
     if (this.failed > failedBefore) {
@@ -795,6 +996,58 @@ async function executeScenarios(
   const verifier = new Verifier(config.pveHost, config.portPveSsh, apiUrl, veHost);
   const tmpDir = mkdtempSync(path.join(tmpdir(), "livetest-"));
 
+  // ZFS snapshot support for dependencies
+  const depSteps = planned.filter((p) => p.isDependency && !p.skipExecution);
+  const nonDepSteps = planned.filter((p) => !p.isDependency);
+  const snapshotName = depSteps.length > 0
+    ? "livetest-deps-" + depSteps
+        .map((p) => p.scenario.id.replace(/\/default$/, "").replace(/\//g, "-"))
+        .join("-")
+        + (nonDepSteps.length > 0 ? "-" + nonDepSteps[0]!.stackName : "")
+    : "";
+
+  // Try to restore from ZFS snapshot (skip dependency installation)
+  let depsRestoredFromSnapshot = false;
+  if (snapshotName && depSteps.length > 0) {
+    try {
+      const checkSnap = nestedSsh(config.pveHost, config.portPveSsh,
+        `zfs list -t snapshot -o name -H | grep '@${snapshotName}$' | head -1`, 30000);
+      if (checkSnap.trim()) {
+        logStep("ZFS", `Restoring dependencies from snapshot @${snapshotName}`);
+        // Stop dependency containers
+        for (const dep of depSteps) {
+          nestedSsh(config.pveHost, config.portPveSsh,
+            `pct stop ${dep.vmId} 2>/dev/null; true`, 30000);
+        }
+        // Rollback each dependency container's disk (recursive removes newer snapshots)
+        for (const dep of depSteps) {
+          const dataset = `rpool/data/subvol-${dep.vmId}-disk-0`;
+          nestedSshStrict(config.pveHost, config.portPveSsh,
+            `zfs rollback -r ${dataset}@${snapshotName}`, 60000);
+        }
+        // Also rollback the volumes dataset if it has the snapshot
+        nestedSsh(config.pveHost, config.portPveSsh,
+          `zfs rollback -r rpool/data/subvol-999999-oci-lxc-deployer-volumes@${snapshotName} 2>/dev/null; true`, 30000);
+        // Start dependency containers
+        for (const dep of depSteps) {
+          nestedSshStrict(config.pveHost, config.portPveSsh,
+            `pct start ${dep.vmId}`, 30000);
+        }
+        // Wait for docker services in last dependency (if docker-compose app)
+        const lastDep = depSteps[depSteps.length - 1]!;
+        const lastDepMeta = appMetaMap.get(lastDep.scenario.application) ?? {};
+        if (lastDep.scenario.wait_seconds && lastDep.scenario.wait_seconds > 0 && lastDepMeta.extends === "docker-compose") {
+          await waitForServices(config.pveHost, config.portPveSsh,
+            lastDep.vmId, lastDep.scenario.wait_seconds);
+        }
+        depsRestoredFromSnapshot = true;
+        logOk(`Dependencies restored from ZFS snapshot @${snapshotName}`);
+      }
+    } catch (err) {
+      logInfo(`ZFS snapshot restore failed, will install normally: ${err}`);
+    }
+  }
+
   try {
     for (let i = 0; i < planned.length; i++) {
       const step = planned[i]!;
@@ -805,6 +1058,16 @@ async function executeScenarios(
         `${i + 1}/${planned.length}`,
         `${scenario.id} (${task}) [VM ${step.vmId}]`,
       );
+
+      // Skip dependencies restored from ZFS snapshot
+      if (depsRestoredFromSnapshot && step.isDependency) {
+        logOk(`Skipping ${scenario.id} (restored from snapshot)`);
+        result.steps.push({
+          vmId: step.vmId, hostname: step.hostname,
+          application: scenario.application, scenarioId: scenario.id,
+        });
+        continue;
+      }
 
       // Skip dependencies that are already running
       if (step.skipExecution) {
@@ -857,6 +1120,18 @@ async function executeScenarios(
         logInfo(`Addons: ${allAddons.join(", ")}`);
       }
 
+      // Reload deployer to pick up any json/ changes
+      try {
+        const reloadResp = await fetch(`${apiUrl}/api/reload`, { method: "POST" });
+        if (reloadResp.ok) {
+          logInfo("Deployer reloaded");
+        } else {
+          logInfo(`Deployer reload returned ${reloadResp.status} (continuing)`);
+        }
+      } catch {
+        logInfo("Deployer reload not available (continuing)");
+      }
+
       // Run CLI
       logInfo(`Running: ${scenario.application} ${task}...`);
       const scenarioFixtureDir = fixtureBaseDir
@@ -887,13 +1162,11 @@ async function executeScenarios(
         cliOutput: cliResult.output,
       });
 
-      // Wait for services if needed
-      if (scenario.wait_seconds && scenario.wait_seconds > 0) {
+      // Wait for docker services (only for docker-compose apps)
+      const appMeta = appMetaMap.get(scenario.application) ?? {};
+      if (scenario.wait_seconds && scenario.wait_seconds > 0 && appMeta.extends === "docker-compose") {
         await waitForServices(config.pveHost, config.portPveSsh, step.vmId, scenario.wait_seconds);
       }
-
-      // Run verifications (auto-defaults merged with explicit verify from test.json)
-      const appMeta = appMetaMap.get(scenario.application) ?? {};
       const defaultVerify = buildDefaultVerify(scenario, appMeta);
       const finalVerify = { ...defaultVerify, ...(scenario.verify ?? {}) };
       // Remove entries explicitly set to false
@@ -901,7 +1174,27 @@ async function executeScenarios(
         if (v === false) delete finalVerify[k];
       }
       logInfo("Verifying...");
-      await verifier.runAll(step.vmId, step.hostname, finalVerify);
+      await verifier.runAll(step.vmId, step.hostname, finalVerify, planned);
+
+      // Create ZFS snapshot after last dependency is installed and verified
+      const nextStep = planned[i + 1];
+      if (snapshotName && step.isDependency && nextStep && !nextStep.isDependency && !depsRestoredFromSnapshot) {
+        try {
+          logStep("ZFS", `Creating snapshot @${snapshotName}`);
+          // Snapshot each dependency container
+          for (const dep of depSteps) {
+            const dataset = `rpool/data/subvol-${dep.vmId}-disk-0`;
+            nestedSshStrict(config.pveHost, config.portPveSsh,
+              `zfs destroy ${dataset}@${snapshotName} 2>/dev/null; zfs snapshot ${dataset}@${snapshotName}`, 30000);
+          }
+          // Also snapshot the volumes dataset
+          nestedSsh(config.pveHost, config.portPveSsh,
+            `zfs destroy rpool/data/subvol-999999-oci-lxc-deployer-volumes@${snapshotName} 2>/dev/null; zfs snapshot rpool/data/subvol-999999-oci-lxc-deployer-volumes@${snapshotName}`, 30000);
+          logOk(`ZFS snapshot @${snapshotName} created`);
+        } catch (err) {
+          logInfo(`ZFS snapshot creation failed (non-fatal): ${err}`);
+        }
+      }
     }
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
