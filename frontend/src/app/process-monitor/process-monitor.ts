@@ -5,7 +5,8 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { CommonModule } from '@angular/common';
-import { IVeExecuteMessagesResponse, ISingleExecuteMessagesResponse, IParameterValue, IVeExecuteMessage } from '../../shared/types';
+import { Subscription } from 'rxjs';
+import { IVeExecuteMessagesResponse, ISingleExecuteMessagesResponse, IParameterValue, IVeExecuteMessage, IPlannedStep } from '../../shared/types';
 import { VeConfigurationService } from '../ve-configuration.service';
 import { StderrDialogComponent } from './stderr-dialog.component';
 
@@ -20,7 +21,7 @@ export class ProcessMonitor implements OnInit, OnDestroy {
   messages: IVeExecuteMessagesResponse | undefined;
   redirectUrl?: string;
   redirectCountdown = 0;
-  private pollInterval?: number;
+  private sseSubscription?: Subscription;
   private redirectTimer?: number;
   private countdownInterval?: number;
   private initialExpandedState = new Map<string, boolean>();  // Track initial expanded state per group
@@ -29,6 +30,7 @@ export class ProcessMonitor implements OnInit, OnDestroy {
   private route = inject(ActivatedRoute);
   private zone = inject(NgZone);
   private dialog = inject(MatDialog);
+  private lastSeenIndex = -1;
   private storedParams: Record<string, { name: string; value: IParameterValue }[]> = {};
   private storedVmInstallKeys: Record<string, string> = {}; // Map from restartKey to vmInstallKey
 
@@ -47,13 +49,11 @@ export class ProcessMonitor implements OnInit, OnDestroy {
     if (state?.vmInstallKey && state.restartKey) {
       this.storedVmInstallKeys[state.restartKey] = state.vmInstallKey;
     }
-    this.startPolling();
+    this.startStreaming();
   }
 
   ngOnDestroy(): void {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-    }
+    this.stopStreaming();
     if (this.redirectTimer) {
       clearTimeout(this.redirectTimer);
     }
@@ -62,20 +62,42 @@ export class ProcessMonitor implements OnInit, OnDestroy {
     }
   }
 
-  startPolling() {
-    // Fetch immediately, then poll every 5 seconds
-    this.fetchMessages();
-    this.pollInterval = window.setInterval(() => this.fetchMessages(), 5000);
+  private startStreaming() {
+    this.stopStreaming();
+    this.sseSubscription = this.veConfigurationService.streamExecuteMessages().subscribe({
+      next: (event) => {
+        this.zone.run(() => {
+          if (event.type === 'snapshot') {
+            this.mergeMessages(event.data);
+          } else {
+            this.mergeSingleMessage(event.data.application, event.data.task, event.data.message);
+          }
+          this.checkAllFinished();
+        });
+      },
+      complete: () => {
+        // SSE connection permanently closed — fall back to single poll
+        this.fetchMessagesFallback();
+      }
+    });
   }
 
-  private resumePolling() {
-    if (!this.pollInterval) {
-      this.startPolling();
+  private stopStreaming() {
+    if (this.sseSubscription) {
+      this.sseSubscription.unsubscribe();
+      this.sseSubscription = undefined;
     }
   }
 
-  private fetchMessages() {
-    this.veConfigurationService.getExecuteMessages().subscribe({
+  private resumeStreaming() {
+    if (!this.sseSubscription) {
+      this.startStreaming();
+    }
+  }
+
+  private fetchMessagesFallback() {
+    const since = this.lastSeenIndex >= 0 ? this.lastSeenIndex : undefined;
+    this.veConfigurationService.getExecuteMessages(since).subscribe({
       next: (msgs) => {
         if (msgs && msgs.length > 0) {
           this.zone.run(() => {
@@ -84,18 +106,15 @@ export class ProcessMonitor implements OnInit, OnDestroy {
           });
         }
       },
-      error: () => {
-        // Optionally handle error
-      }
+      error: () => { /* ignore fallback errors */ }
     });
   }
 
   private checkAllFinished() {
     if (!this.messages || this.messages.length === 0) return;
     const anyInProgress = this.messages.some(g => this.isInProgress(g));
-    if (!anyInProgress && this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = undefined;
+    if (!anyInProgress && this.sseSubscription) {
+      this.stopStreaming();
 
       // Check for redirect URL in finished messages
       if (!this.redirectUrl) {
@@ -133,11 +152,109 @@ export class ProcessMonitor implements OnInit, OnDestroy {
     }
   }
 
+  private mergeSingleMessage(application: string, task: string, msg: IVeExecuteMessage) {
+    // Track index
+    if (msg.index !== undefined && msg.index > this.lastSeenIndex) {
+      this.lastSeenIndex = msg.index;
+    }
+
+    if (!this.messages) {
+      this.messages = [{ application, task, messages: [msg] }];
+      return;
+    }
+
+    // Find existing group
+    const groupIdx = this.messages.findIndex(
+      g => g.application === application && g.task === task
+    );
+    if (groupIdx < 0) {
+      this.messages = [...this.messages, { application, task, messages: [msg] }];
+      return;
+    }
+
+    const group = this.messages[groupIdx]!;
+
+    // Partial message (no index): find or create a partial entry by command name
+    if (msg.partial) {
+      const existingIdx = group.messages.findIndex(m => m.partial && m.command === msg.command);
+      if (existingIdx >= 0) {
+        const existingMsg = group.messages[existingIdx]!;
+        const updated = {
+          ...existingMsg,
+          stderr: (existingMsg.stderr || '') + (msg.stderr || ''),
+          result: msg.result ? (existingMsg.result || '') + msg.result : existingMsg.result,
+        };
+        const newMessages = [...group.messages];
+        newMessages[existingIdx] = updated;
+        const newGroups = [...this.messages];
+        newGroups[groupIdx] = { ...group, messages: newMessages };
+        this.messages = newGroups;
+      } else {
+        // New partial — append
+        const newGroups = [...this.messages];
+        newGroups[groupIdx] = { ...group, messages: [...group.messages, msg] };
+        this.messages = newGroups;
+      }
+      return;
+    }
+
+    // Final message: replace the partial entry for the same command (if any)
+    const partialIdx = group.messages.findIndex(m => m.partial && m.command === msg.command);
+    if (partialIdx >= 0) {
+      const partialMsg = group.messages[partialIdx]!;
+      const updated = {
+        ...msg,
+        stderr: (partialMsg.stderr || '') + (msg.stderr || ''),
+        result: msg.result || partialMsg.result,
+      };
+      const newMessages = [...group.messages];
+      newMessages[partialIdx] = updated;
+      const newGroups = [...this.messages];
+      newGroups[groupIdx] = { ...group, messages: newMessages };
+      this.messages = newGroups;
+      return;
+    }
+
+    // Final message with index: try to find by index
+    if (msg.index !== undefined) {
+      const existingMsgIdx = group.messages.findIndex(m => m.index === msg.index);
+      if (existingMsgIdx >= 0) {
+        const existingMsg = group.messages[existingMsgIdx]!;
+        const updated = {
+          ...existingMsg,
+          ...msg,
+          stderr: (existingMsg.stderr || '') + (msg.stderr || ''),
+          result: msg.result || existingMsg.result,
+        };
+        const newMessages = [...group.messages];
+        newMessages[existingMsgIdx] = updated;
+        const newGroups = [...this.messages];
+        newGroups[groupIdx] = { ...group, messages: newMessages };
+        this.messages = newGroups;
+        return;
+      }
+    }
+
+    // New message — append
+    const newGroups = [...this.messages];
+    newGroups[groupIdx] = { ...group, messages: [...group.messages, msg] };
+    this.messages = newGroups;
+  }
+
   private mergeMessages(newMsgs: IVeExecuteMessagesResponse) {
     // Store vmInstallKeys
     for (const group of newMsgs) {
       if (group.vmInstallKey && group.restartKey) {
         this.storedVmInstallKeys[group.restartKey] = group.vmInstallKey;
+      }
+    }
+
+    // Track highest seen index for delta-polling
+    for (const group of newMsgs) {
+      for (const msg of group.messages) {
+        if (msg.index !== undefined && msg.index > this.lastSeenIndex) {
+          this.lastSeenIndex = msg.index;
+        }
       }
     }
 
@@ -154,16 +271,17 @@ export class ProcessMonitor implements OnInit, OnDestroy {
       if (!newGroup) {
         return existing;
       }
-      // Merge new messages
-      const existingIndices = new Set(existing.messages.map(m => m.index));
-      const newMessages = newGroup.messages.filter(m => !existingIndices.has(m.index));
-      if (newMessages.length === 0 && !newGroup.vmInstallKey) {
+      // With delta-polling, new messages are guaranteed to be new — just append
+      const hasNewMessages = newGroup.messages.length > 0;
+      const hasNewPlannedSteps = newGroup.plannedSteps && !existing.plannedSteps;
+      if (!hasNewMessages && !newGroup.vmInstallKey && !hasNewPlannedSteps) {
         return existing;
       }
       return {
         ...existing,
+        plannedSteps: newGroup.plannedSteps || existing.plannedSteps,
         vmInstallKey: newGroup.vmInstallKey || existing.vmInstallKey,
-        messages: [...existing.messages, ...newMessages]
+        messages: [...existing.messages, ...newGroup.messages]
       };
     });
 
@@ -181,16 +299,15 @@ export class ProcessMonitor implements OnInit, OnDestroy {
   hasError(group: ISingleExecuteMessagesResponse): boolean {
     const finishedMsg = group.messages.find(msg => msg.finished);
     if (finishedMsg) {
-      // finished with non-zero exit code is an error
       return finishedMsg.exitCode !== 0;
     }
-    return group.messages.some(msg => msg.error || (msg.exitCode !== undefined && msg.exitCode !== 0));
+    return group.messages.some(msg => !msg.partial && (msg.error || (msg.exitCode !== undefined && msg.exitCode !== 0)));
   }
 
   /** Check if group is still in progress (not finished and not errored) */
   isInProgress(group: ISingleExecuteMessagesResponse): boolean {
     const hasFinished = group.messages.some(msg => msg.finished);
-    const hasError = group.messages.some(msg => msg.error || (msg.exitCode !== undefined && msg.exitCode !== 0));
+    const hasError = group.messages.some(msg => !msg.partial && (msg.error || (msg.exitCode !== undefined && msg.exitCode !== 0)));
     return !hasFinished && !hasError;
   }
 
@@ -216,7 +333,8 @@ export class ProcessMonitor implements OnInit, OnDestroy {
             g => !(g.application === group.application && g.task === group.task)
           );
         }
-        this.resumePolling();
+        this.lastSeenIndex = -1;
+        this.resumeStreaming();
       },
       error: (err) => {
         console.error('Restart failed:', err);
@@ -249,7 +367,8 @@ export class ProcessMonitor implements OnInit, OnDestroy {
             g => !(g.application === group.application && g.task === group.task)
           );
         }
-        this.resumePolling();
+        this.lastSeenIndex = -1;
+        this.resumeStreaming();
       },
       error: (err) => {
         console.error('Restart from beginning failed:', err);
@@ -269,6 +388,18 @@ export class ProcessMonitor implements OnInit, OnDestroy {
         exitCode: msg.exitCode
       }
     });
+  }
+
+  getPendingSteps(group: ISingleExecuteMessagesResponse): IPlannedStep[] {
+    if (!group.plannedSteps) return [];
+    const completedNames = new Set(
+      group.messages.filter(m => m.exitCode === 0 || m.partial).map(m => m.command)
+    );
+    return group.plannedSteps.filter(step => !completedNames.has(step.name));
+  }
+
+  getCompletedCount(group: ISingleExecuteMessagesResponse): number {
+    return group.messages.filter(m => m.exitCode === 0 && !m.finished).length;
   }
 
   close(): void {

@@ -155,6 +155,7 @@ export declare enum ApiUri {
     VeRestart = "/api/:veContext/ve/restart/:restartKey",
     VeRestartInstallation = "/api/:veContext/ve/restart-installation/:vmInstallKey",
     VeExecute = "/api/:veContext/ve/execute",
+    VeExecuteStream = "/api/:veContext/ve/execute/stream",
     VeLogs = "/api/:veContext/ve/logs/:vmId",
     VeLogsHostname = "/api/:veContext/ve/logs/:vmId/hostname",
     VeDockerLogs = "/api/:veContext/ve/logs/:vmId/docker",
@@ -276,10 +277,15 @@ export interface IPostVeConfigurationResponse {
     vmInstallKey?: string;
 }
 export type IApplicationsResponse = IApplicationWeb[];
+export interface IPlannedStep {
+    name: string;
+    description?: string;
+}
 export interface ISingleExecuteMessagesResponse {
     application: string;
     task: string;
     messages: IVeExecuteMessage[];
+    plannedSteps?: IPlannedStep[];
     restartKey?: string;
     vmInstallKey?: string;
 }
