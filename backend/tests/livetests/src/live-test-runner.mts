@@ -95,6 +95,7 @@ function loadConfig(instanceName?: string): {
   bridge: string;
   veHost: string;
   veSshPort: number;
+  vmId: number;
   snapshot: { enabled: boolean } | undefined;
 } {
   const projectRoot = path.resolve(import.meta.dirname, "../../../..");
@@ -154,6 +155,7 @@ function loadConfig(instanceName?: string): {
     bridge: inst.bridge || "vmbr0",
     veHost,
     veSshPort,
+    vmId: inst.vmId,
     snapshot,
   };
 }
@@ -267,32 +269,62 @@ async function executeScenarios(
     }
   } catch { /* ignore */ }
 
-  // ZFS snapshot support for dependencies
+  // Build hash for snapshot invalidation — snapshots from different builds are stale
+  let buildHash: string | undefined;
+  try {
+    const buildInfoPath = path.join(projectRoot, "backend/dist/build-info.json");
+    const buildInfo = JSON.parse(readFileSync(buildInfoPath, "utf-8"));
+    buildHash = buildInfo.dirty ? `${buildInfo.gitHash}-dirty` : buildInfo.gitHash;
+  } catch { /* ignore — no build hash available */ }
+
+  // Snapshot support for dependencies
   // A step is snapshot-worthy if another step in the plan depends on it
   const allDepIds = new Set(planned.flatMap((p) => p.scenario.depends_on ?? []));
   const depSteps = planned.filter((p) => allDepIds.has(p.scenario.id) && !p.skipExecution);
+  // For dev (local deployer), use .livetest-data/ for context backup/restore with snapshots
+  const isLocalDeployer = config.deployerUrl.includes("localhost");
+  const localContextPath = isLocalDeployer
+    ? path.join(projectRoot, ".livetest-data")
+    : undefined;
+
   const snapMgr = config.snapshot?.enabled
-    ? new SnapshotManager(config.pveHost, config.portPveSsh, (msg) => logInfo(msg))
+    ? new SnapshotManager(config.pveHost, config.vmId, config.portPveSsh, (msg) => logInfo(msg), localContextPath)
     : null;
 
-  // Try to restore from ZFS snapshot (skip dependency installation)
+  // Try to restore from whole-VM snapshot (skip dependency installation)
   let depsRestoredFromSnapshot = false;
   if (snapMgr && depSteps.length > 0) {
     const depIds = depSteps.map((p) => p.scenario.id);
-    const best = snapMgr.findBestSnapshot(depIds);
+    const best = snapMgr.findBestSnapshot(depIds, buildHash);
     if (best) {
       try {
-        const depVmIds = depSteps.slice(0, best.index + 1).map((p) => p.vmId);
         logStep("Snapshot", `Restoring to @${best.name}`);
-        snapMgr.rollback(best.name, depVmIds);
+        snapMgr.rollback(best.name);
         depsRestoredFromSnapshot = true;
+
+        // Stop ghost containers that are not dependencies in this run
+        const depVmIds = new Set(depSteps.map((p) => p.vmId));
+        try {
+          const pctList = nestedSsh(config.pveHost, config.portPveSsh,
+            `pct list 2>/dev/null | tail -n +2 | awk '{print $1}'`, 10000);
+          for (const line of pctList.split("\n")) {
+            const vmId = parseInt(line.trim(), 10);
+            if (!isNaN(vmId) && !depVmIds.has(vmId)) {
+              nestedSsh(config.pveHost, config.portPveSsh,
+                `pct set ${vmId} --onboot 0 2>/dev/null; pct stop ${vmId} 2>/dev/null; true`, 15000);
+            }
+          }
+        } catch {
+          logInfo("Warning: ghost container cleanup failed (non-fatal)");
+        }
+
         // Mark all dependencies up to and including the snapshot as skipped
         for (let j = 0; j <= best.index; j++) {
           depSteps[j]!.skipExecution = true;
         }
-        logOk(`Dependencies restored from ZFS snapshot @${best.name}`);
+        logOk(`Dependencies restored from VM snapshot @${best.name}`);
       } catch (err) {
-        logInfo(`ZFS snapshot restore failed, will install normally: ${err}`);
+        logInfo(`VM snapshot restore failed, will install normally: ${err}`);
       }
     }
   }
@@ -568,18 +600,13 @@ async function executeScenarios(
         }));
       }
 
-      // Create ZFS snapshot after each dependency is installed and verified
+      // Create whole-VM snapshot after each dependency is installed and verified
       if (snapMgr && allDepIds.has(step.scenario.id) && !step.skipExecution) {
         try {
           const depSnapName = snapMgr.snapshotName(step.scenario.id);
-          // Collect all dep VM IDs installed so far (including this one)
-          const installedDepVmIds = planned
-            .filter((p) => allDepIds.has(p.scenario.id) && !p.skipExecution)
-            .filter((p) => planned.indexOf(p) <= i)
-            .map((p) => p.vmId);
-          snapMgr.create(depSnapName, installedDepVmIds);
+          snapMgr.create(depSnapName, buildHash);
         } catch (err) {
-          logInfo(`ZFS snapshot creation failed (non-fatal): ${err}`);
+          logInfo(`VM snapshot creation failed (non-fatal): ${err}`);
         }
       }
     }
@@ -698,6 +725,26 @@ async function main() {
     }
   }
 
+  // Set up OCI version cache on PVE host (prevents skopeo calls during tests)
+  try {
+    const ociCache = JSON.stringify({
+      _meta: { mode: "test" },
+      versions: {
+        "postgres:latest": "17.5",
+        "postgrest/postgrest:latest": "14.7",
+        "eclipse-mosquitto:2": "2",
+      },
+      inspect: {},
+      tags: {},
+    });
+    nestedSsh(config.pveHost, config.portPveSsh,
+      `cat > /tmp/.oci-version-cache.json << 'EOFCACHE'\n${ociCache}\nEOFCACHE`,
+      10000);
+    logOk("OCI version cache written (test mode)");
+  } catch {
+    logInfo("Warning: Could not write OCI version cache (non-fatal)");
+  }
+
   // Fetch application metadata (stacktypes, extends, tags)
   const appStacktypes = new Map<string, string | string[]>();
   const appMetaMap = new Map<string, AppMeta>();
@@ -774,8 +821,22 @@ async function main() {
 
     const task = p.scenario.task || "installation";
     if (p.isDependency && status.includes("running")) {
-      logOk(`Dependency VM ${p.vmId} (${p.scenario.id}) running — reusing`);
-      p.skipExecution = true;
+      // Health check: verify the container is actually managed (not leftover from a failed run)
+      let isManaged = false;
+      try {
+        const notes = nestedSsh(config.pveHost, config.portPveSsh,
+          `pct config ${p.vmId} 2>/dev/null | grep -a 'description:' | head -1`, 5000);
+        isManaged = /oci-lxc-deployer(%3A|:)managed/.test(notes);
+      } catch { /* treat as not managed */ }
+      if (isManaged) {
+        logOk(`Dependency VM ${p.vmId} (${p.scenario.id}) running — reusing`);
+        p.skipExecution = true;
+      } else {
+        logInfo(`Dependency VM ${p.vmId} (${p.scenario.id}) running but not managed — destroying`);
+        nestedSsh(config.pveHost, config.portPveSsh,
+          `pct stop ${p.vmId} 2>/dev/null || true; pct destroy ${p.vmId} --force --purge 2>/dev/null || true`,
+          30000);
+      }
     } else if (REPLACE_CT_TASKS.includes(task) && status.includes("running")) {
       // upgrade/reconfigure: keep existing VM, don't destroy
       logOk(`VM ${p.vmId} (${p.scenario.id}) running — ${task} in place`);

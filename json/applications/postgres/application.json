@@ -72,9 +72,11 @@
     }
   ],
   "installation": {},
+  "check": {
+    "check": [
+      "check-pg-ssl.json"
+    ]
+  },
   "tags": ["database"],
-  "stacktype": "postgres",
-  "verification": {
-    "wait_seconds": 30
-  }
+  "stacktype": "postgres"
 }

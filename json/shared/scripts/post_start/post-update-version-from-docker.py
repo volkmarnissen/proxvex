@@ -72,8 +72,12 @@ def find_main_image(vmid: str, app_id: str) -> str | None:
 
 
 def get_version(vmid: str, image: str) -> str:
-    """Get version from OCI label, fallback to tag."""
-    # Try OCI label
+    """Get version using oci_version_lib (labels, tag, digest matching).
+
+    Also tries docker inspect inside the container as first attempt,
+    since the local image may have labels not visible to skopeo.
+    """
+    # Try OCI label via docker inspect inside container first
     label = docker_exec(
         vmid,
         f"docker inspect {image} --format {{{{index .Config.Labels \"org.opencontainers.image.version\"}}}}",
@@ -81,9 +85,8 @@ def get_version(vmid: str, image: str) -> str:
     if label and label != "<no value>":
         return label
 
-    # Fallback: image tag
-    tag = image.rsplit(":", 1)[-1] if ":" in image else ""
-    return tag if tag and tag != "latest" else "unknown"
+    # Delegate to oci_version_lib (labels, tag, digest matching via skopeo)
+    return resolve_image_version(image)
 
 
 def update_notes_version(vmid: str, version: str) -> None:

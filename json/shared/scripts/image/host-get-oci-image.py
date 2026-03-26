@@ -124,44 +124,10 @@ def parse_image_ref(oci_image: str) -> str:
     
     return image_ref
 
+# extract_version_from_inspect is provided by oci_version_lib.py (prepended)
+# as extract_version_from_labels(). For backwards compatibility:
 def extract_version_from_inspect(inspect_output: dict) -> str:
-    """
-    Extract version tag from skopeo inspect output.
-    
-    Tries to find version in Labels:
-    - org.opencontainers.image.version
-    - io.hass.version
-    - org.opencontainers.image.revision
-    - version
-    
-    Returns the extracted version, or None if not found.
-    """
-    try:
-        labels = inspect_output.get('Labels', {})
-        if not labels:
-            return None
-        
-        # Try common version label fields (in order of preference)
-        version_fields = [
-            'org.opencontainers.image.version',
-            'io.hass.version',
-            'org.opencontainers.image.revision',
-            'version',
-        ]
-        
-        for field in version_fields:
-            if field in labels:
-                version = labels[field]
-                if version and version.strip():
-                    # Clean up version tag (remove leading 'v' if present)
-                    version = version.strip()
-                    if version.lower().startswith('v') and len(version) > 1:
-                        version = version[1:]
-                    return version
-        
-        return None
-    except Exception:
-        return None
+    return extract_version_from_labels(inspect_output)
 
 def extract_application_name_from_inspect(inspect_output: dict) -> Optional[str]:
     """
@@ -255,11 +221,14 @@ def skopeo_inspect(image_ref: str, username: Optional[str] = None, password: Opt
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=True)
         return json.loads(result.stdout)
     except subprocess.TimeoutExpired:
-        error(f"Timeout inspecting image {image_ref}")
+        log(f"Warning: Timeout inspecting image {image_ref}")
+        return None
     except subprocess.CalledProcessError as e:
-        error(f"Failed to inspect image {image_ref}: {e.stderr}")
+        log(f"Warning: Failed to inspect image {image_ref}: {e.stderr.strip()}")
+        return None
     except json.JSONDecodeError as e:
-        error(f"Failed to parse inspect output: {e}")
+        log(f"Warning: Failed to parse inspect output for {image_ref}: {e}")
+        return None
 
 def skopeo_copy(image_ref: str, output_path: str, username: Optional[str] = None, 
                 password: Optional[str] = None, platform: Optional[str] = None) -> None:
@@ -441,17 +410,16 @@ def main() -> None:
                 if search_pattern in template_path:
                     log(f"OCI image already exists: {template_path}")
                     
-                    # Still need to detect ostype - inspect the existing image or use default
-                    # For simplicity, inspect the source image
+                    # Detect ostype and version — inspect may fail (rate limit), use defaults
                     log("Inspecting image to detect ostype and application name...")
                     inspect_output = skopeo_inspect(image_ref, registry_username, registry_password)
-                    ostype = detect_ostype_from_inspect(inspect_output)
-                    application_name = extract_application_name_from_inspect(inspect_output) or ""
+                    ostype = detect_ostype_from_inspect(inspect_output) if inspect_output else "alpine"
+                    application_name = extract_application_name_from_inspect(inspect_output) or "" if inspect_output else ""
                     actual_tag = tag
                     if tag == "latest" or tag.lower() == "latest":
-                        extracted_version = extract_version_from_inspect(inspect_output)
-                        if extracted_version:
-                            actual_tag = extracted_version
+                        resolved = resolve_image_version(f"{image}:{tag}")
+                        if resolved and resolved != "unknown":
+                            actual_tag = resolved
 
                     # Extract arch from platform for Proxmox
                     oci_arch = platform.split('/')[-1] if '/' in platform else platform
@@ -475,19 +443,19 @@ def main() -> None:
     # Inspect image to extract version (for "latest" tag) and detect ostype
     log("Inspecting image...")
     inspect_output = skopeo_inspect(image_ref, registry_username, registry_password)
-    
-    # Extract version if tag is "latest"
+
+    # Resolve version (labels -> digest matching) via oci_version_lib
     actual_tag = tag
     if tag == "latest" or tag.lower() == "latest":
-        extracted_version = extract_version_from_inspect(inspect_output)
-        if extracted_version:
-            actual_tag = extracted_version
-            log(f"Extracted version from image labels: {actual_tag}")
-    
-    # Detect ostype and application name
-    ostype = detect_ostype_from_inspect(inspect_output)
+        resolved = resolve_image_version(f"{image}:{tag}")
+        if resolved and resolved != "unknown":
+            actual_tag = resolved
+            log(f"Resolved version: {actual_tag}")
+
+    # Detect ostype and application name (fallback to defaults if inspect failed)
+    ostype = detect_ostype_from_inspect(inspect_output) if inspect_output else "alpine"
     log(f"Detected ostype: {ostype}")
-    application_name = extract_application_name_from_inspect(inspect_output) or ""
+    application_name = (extract_application_name_from_inspect(inspect_output) or "") if inspect_output else ""
     if application_name:
         log(f"Extracted application name: {application_name}")
 

@@ -16,7 +16,7 @@ interface TemplateJson {
   execute_on: string;
   commands: Array<{
     script: string;
-    library?: string;
+    library?: string | string[];
     outputs?: string[];
   }>;
 }
@@ -44,7 +44,7 @@ export class TemplateTestHelper {
     templatePath: string;
     commandIndex?: number;
     inputs?: Record<string, string | number | boolean>;
-  }): { script: string; executeOn: string } {
+  }): { script: string; executeOn: string; interpreter: string } {
     const fullTemplatePath = join(
       this.config.repoRoot,
       "json",
@@ -70,18 +70,21 @@ export class TemplateTestHelper {
 
     let script = readFileSync(scriptPath, "utf-8");
 
-    // Prepend library if defined
+    // Prepend library/libraries if defined
     if (command.library) {
-      const libraryPath = join(
-        this.config.repoRoot,
-        "json",
-        "shared",
-        "scripts",
-        "library",
-        command.library,
-      );
-      const library = readFileSync(libraryPath, "utf-8");
-      script = library + "\n" + script;
+      const libraries = Array.isArray(command.library) ? command.library : [command.library];
+      for (const lib of libraries) {
+        const libraryPath = join(
+          this.config.repoRoot,
+          "json",
+          "shared",
+          "scripts",
+          "library",
+          lib,
+        );
+        const library = readFileSync(libraryPath, "utf-8");
+        script = library + "\n" + script;
+      }
     }
 
     // Substitute template variables {{ key }} using production VariableResolver
@@ -93,7 +96,14 @@ export class TemplateTestHelper {
     );
     script = resolver.replaceVars(script);
 
-    return { script, executeOn: template.execute_on };
+    // Detect interpreter from shebang (sh, python3, etc.)
+    // Library may be prepended before the shebang, so check the script file directly
+    let interpreter = "sh";
+    if (command.script.endsWith(".py")) {
+      interpreter = "python3";
+    }
+
+    return { script, executeOn: template.execute_on, interpreter };
   }
 
   private parseOutputs(stdout: string): Record<string, string> {
@@ -117,11 +127,32 @@ export class TemplateTestHelper {
     }
   }
 
+  /**
+   * Write an OCI version cache file on the PVE host.
+   * In test mode, this prevents any skopeo calls and returns deterministic versions.
+   */
+  async setupOciVersionCache(
+    versions: Record<string, string>,
+  ): Promise<void> {
+    const cache = {
+      _meta: { mode: "test" },
+      versions,
+      inspect: {},
+      tags: {},
+    };
+    await spawnAsync("ssh", [...this.sshBaseArgs, "sh"], {
+      input: `cat > /tmp/.oci-version-cache.json << 'EOFCACHE'\n${JSON.stringify(cache, null, 2)}\nEOFCACHE`,
+      timeout: 10000,
+    });
+  }
+
   async executeOnVe(
     script: string,
     timeout = 120000,
+    interpreter = "sh",
   ): Promise<TemplateTestResult> {
-    const result = await spawnAsync("ssh", this.sshArgs, {
+    const sshArgs = [...this.sshBaseArgs, interpreter];
+    const result = await spawnAsync("ssh", sshArgs, {
       input: script,
       timeout,
     });
@@ -162,10 +193,10 @@ export class TemplateTestHelper {
     vmId?: string;
     timeout?: number;
   }): Promise<TemplateTestResult> {
-    const { script, executeOn } = this.prepareScript(opts);
+    const { script, executeOn, interpreter } = this.prepareScript(opts);
 
     if (executeOn === "ve") {
-      return this.executeOnVe(script, opts.timeout);
+      return this.executeOnVe(script, opts.timeout, interpreter);
     }
 
     if (executeOn === "lxc") {

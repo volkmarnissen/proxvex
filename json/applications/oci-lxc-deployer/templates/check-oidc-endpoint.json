@@ -1,0 +1,13 @@
+{
+  "execute_on": "ve",
+  "name": "Check OIDC Endpoint",
+  "description": "Checks the OIDC endpoint is reachable and API is protected. Only runs when OIDC addon is active.",
+  "skip_if_all_missing": ["has_addon_oidc"],
+  "commands": [
+    {
+      "name": "Check OIDC Endpoint",
+      "script": "host-check-oidc-endpoint.sh",
+      "outputs": ["check_oidc"]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "execute_on": "ve",
+  "name": "Check Docker Services",
+  "description": "Checks all Docker services are running and healthy inside the container. Waits for healthchecks to pass.",
+  "implements": "docker",
+  "parameters": [
+    {
+      "id": "startup_timeout",
+      "name": "Startup Timeout",
+      "type": "number",
+      "required": false,
+      "internal": true,
+      "default": 120,
+      "description": "Seconds to wait for Docker services to become healthy."
+    }
+  ],
+  "commands": [
+    {
+      "name": "Check Docker Services",
+      "script": "host-check-docker-services.sh",
+      "outputs": ["check_services"]
+    }
+  ]
+}

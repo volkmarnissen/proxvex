@@ -1,34 +1,63 @@
 /**
- * ZFS snapshot manager for live integration tests.
+ * Whole-VM snapshot manager for live integration tests.
  *
- * Creates per-dependency ZFS snapshots of all container disks and the
- * shared volumes dataset inside the nested PVE. Each snapshot captures
- * the cumulative state of all dependencies installed up to that point.
+ * Creates snapshots of the entire nested PVE VM (QEMU) from the outer
+ * Proxmox host using `qm snapshot`. A single snapshot captures everything:
+ * all LXC containers, their disks, configs, volumes, and the ZFS pool.
  *
- * /etc/pve/lxc is on pmxcfs (FUSE) and NOT included in ZFS snapshots,
- * so we backup/restore it manually to the volumes dataset.
+ * For dev instances (deployer runs locally), the local context files
+ * (storagecontext.json, secret.txt) are copied to the nested VM before
+ * snapshot creation and restored after rollback. This ensures stack
+ * passwords match the snapshot state.
  */
 import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 export interface SnapshotConfig {
   enabled: boolean;
 }
 
-const PVE_LXC_BACKUP_DIR = "/rpool/data/subvol-999999-oci-lxc-deployer-volumes/.pve-lxc-backup";
-const VOLUMES_DATASET = "rpool/data/subvol-999999-oci-lxc-deployer-volumes";
+const CONTEXT_BACKUP_DIR = "/root/.deployer-context-backup";
 
 export class SnapshotManager {
   constructor(
-    private pveHost: string,
-    private pveSshPort: number,
+    private outerPveHost: string,
+    private nestedVmId: number,
+    private nestedSshPort: number,
     private log: (msg: string) => void = console.log,
+    private localContextPath?: string,
   ) {}
 
-  private ssh(cmd: string, timeout = 30000): string {
+  /** SSH to the outer PVE host (port 22) for qm commands */
+  private outerSsh(cmd: string, timeout = 60000): string {
     return execSync(
-      `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -p ${this.pveSshPort} root@${this.pveHost} ${JSON.stringify(cmd)}`,
+      `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 root@${this.outerPveHost} ${JSON.stringify(cmd)}`,
       { timeout, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     ).trim();
+  }
+
+  /** SSH to the nested PVE VM (via port-forwarded port) for pct commands */
+  private nestedSsh(cmd: string, timeout = 15000): string {
+    return execSync(
+      `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 -p ${this.nestedSshPort} root@${this.outerPveHost} ${JSON.stringify(cmd)}`,
+      { timeout, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    ).trim();
+  }
+
+  /** SCP files to the nested VM */
+  private scpToNested(localFile: string, remotePath: string): void {
+    execSync(
+      `scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${this.nestedSshPort} ${JSON.stringify(localFile)} root@${this.outerPveHost}:${JSON.stringify(remotePath)}`,
+      { timeout: 15000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+  }
+
+  /** SCP files from the nested VM */
+  private scpFromNested(remotePath: string, localFile: string): void {
+    execSync(
+      `scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -P ${this.nestedSshPort} root@${this.outerPveHost}:${JSON.stringify(remotePath)} ${JSON.stringify(localFile)}`,
+      { timeout: 15000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
   }
 
   /** Generate snapshot name from scenario ID: dep-<app>-<variant> */
@@ -36,10 +65,13 @@ export class SnapshotManager {
     return "dep-" + scenarioId.replace(/\//g, "-");
   }
 
-  /** Check if a snapshot exists on the volumes dataset */
+  /** Check if a snapshot exists for the nested VM */
   exists(name: string): boolean {
     try {
-      this.ssh(`zfs list -t snapshot -o name -H | grep -q '@${name}$'`);
+      this.outerSsh(
+        `qm listsnapshot ${this.nestedVmId} | grep -q ' ${name} '`,
+        15000,
+      );
       return true;
     } catch {
       return false;
@@ -47,115 +79,167 @@ export class SnapshotManager {
   }
 
   /**
-   * Create ZFS snapshots for all dependency VMs + volumes dataset.
-   * 1. Backup /etc/pve/lxc configs to volumes dataset
-   * 2. ZFS snapshot each VM disk + volumes dataset
+   * Backup local context files to the nested VM.
+   * Called before snapshot creation so passwords are embedded in the snapshot.
    */
-  create(name: string, depVmIds: number[]): void {
-    this.log(`Creating ZFS snapshot @${name}...`);
+  private backupContext(): void {
+    if (!this.localContextPath) return;
 
-    // 1. Backup /etc/pve/lxc
+    const ctxFile = `${this.localContextPath}/storagecontext.json`;
+    const secretFile = `${this.localContextPath}/secret.txt`;
+
+    if (!existsSync(ctxFile) && !existsSync(secretFile)) return;
+
     try {
-      this.ssh(
-        `mkdir -p ${PVE_LXC_BACKUP_DIR} && cp -a /etc/pve/lxc/*.conf ${PVE_LXC_BACKUP_DIR}/ 2>/dev/null || true`,
-        15000,
-      );
-    } catch (err) {
-      this.log(`Warning: /etc/pve/lxc backup failed (non-fatal): ${err}`);
-    }
-
-    // 2. Snapshot each dependency VM disk
-    for (const vmId of depVmIds) {
-      const dataset = `rpool/data/subvol-${vmId}-disk-0`;
-      try {
-        this.ssh(
-          `zfs destroy ${dataset}@${name} 2>/dev/null; zfs snapshot ${dataset}@${name}`,
-          30000,
-        );
-      } catch (err) {
-        this.log(`Warning: snapshot ${dataset}@${name} failed: ${err}`);
+      this.nestedSsh(`mkdir -p ${CONTEXT_BACKUP_DIR}`);
+      if (existsSync(ctxFile)) {
+        this.scpToNested(ctxFile, `${CONTEXT_BACKUP_DIR}/storagecontext.json`);
       }
+      if (existsSync(secretFile)) {
+        this.scpToNested(secretFile, `${CONTEXT_BACKUP_DIR}/secret.txt`);
+      }
+      this.log("Local context backed up to nested VM");
+    } catch (err) {
+      this.log(`Warning: context backup failed (non-fatal): ${err}`);
     }
+  }
 
-    // 3. Snapshot volumes dataset (includes /etc/pve/lxc backup)
+  /**
+   * Restore local context files from the nested VM.
+   * Called after snapshot rollback so passwords match the restored state.
+   */
+  private restoreContext(): void {
+    if (!this.localContextPath) return;
+
     try {
-      this.ssh(
-        `zfs destroy ${VOLUMES_DATASET}@${name} 2>/dev/null; zfs snapshot ${VOLUMES_DATASET}@${name}`,
+      this.scpFromNested(
+        `${CONTEXT_BACKUP_DIR}/storagecontext.json`,
+        `${this.localContextPath}/storagecontext.json`,
+      );
+      this.scpFromNested(
+        `${CONTEXT_BACKUP_DIR}/secret.txt`,
+        `${this.localContextPath}/secret.txt`,
+      );
+      this.log("Local context restored from snapshot");
+    } catch (err) {
+      this.log(`Warning: context restore failed (non-fatal): ${err}`);
+    }
+  }
+
+  /**
+   * Create a live snapshot of the entire nested PVE VM.
+   * No VM stop needed — ZFS snapshots are atomic.
+   * Takes ~2s on ZFS backend.
+   */
+  create(name: string, buildHash?: string): void {
+    this.log(`Creating VM snapshot @${name}...`);
+
+    // Backup local context to nested VM (embedded in snapshot)
+    this.backupContext();
+
+    // Delete existing snapshot with same name (idempotent)
+    try {
+      this.outerSsh(
+        `qm delsnapshot ${this.nestedVmId} ${name} 2>/dev/null; true`,
         30000,
       );
-    } catch (err) {
-      this.log(`Warning: volumes snapshot failed: ${err}`);
-    }
+    } catch { /* ignore */ }
+
+    // Create live snapshot (no VM stop needed, --vmstate 0 skips RAM)
+    const desc = buildHash ? `build:${buildHash}` : "livetest";
+    this.outerSsh(
+      `qm snapshot ${this.nestedVmId} ${name} --vmstate 0 --description ${JSON.stringify(desc)}`,
+      30000,
+    );
 
     this.log(`Snapshot @${name} created`);
   }
 
   /**
-   * Rollback ZFS snapshots for dependency VMs + volumes dataset.
-   * 1. Stop dependency containers
-   * 2. ZFS rollback each VM disk + volumes dataset
-   * 3. Restore /etc/pve/lxc configs from backup
-   * 4. Start dependency containers
+   * Rollback the entire nested PVE VM to a snapshot.
+   * Stops the VM, rolls back, starts it, waits for SSH.
+   * Restores local context files from the VM so passwords match.
    */
-  rollback(name: string, depVmIds: number[]): void {
+  rollback(name: string): void {
     this.log(`Rolling back to @${name}...`);
 
-    // 1. Stop containers
-    for (const vmId of depVmIds) {
-      this.ssh(`pct stop ${vmId} 2>/dev/null; true`, 30000);
-    }
-
-    // 2. Rollback VM disks
-    for (const vmId of depVmIds) {
-      const dataset = `rpool/data/subvol-${vmId}-disk-0`;
-      try {
-        this.ssh(`zfs rollback -r ${dataset}@${name}`, 60000);
-      } catch (err) {
-        this.log(`Warning: rollback ${dataset}@${name} failed: ${err}`);
-      }
-    }
-
-    // 3. Rollback volumes dataset
+    // Stop nested VM
     try {
-      this.ssh(
-        `zfs rollback -r ${VOLUMES_DATASET}@${name}`,
-        60000,
-      );
-    } catch (err) {
-      this.log(`Warning: volumes rollback failed: ${err}`);
+      this.outerSsh(`qm stop ${this.nestedVmId}`, 60000);
+    } catch {
+      this.log("Warning: qm stop failed (may already be stopped)");
     }
 
-    // 4. Restore /etc/pve/lxc configs from backup (now restored by volumes rollback)
-    try {
-      this.ssh(
-        `if [ -d ${PVE_LXC_BACKUP_DIR} ]; then cp -a ${PVE_LXC_BACKUP_DIR}/*.conf /etc/pve/lxc/ 2>/dev/null || true; fi`,
-        15000,
-      );
-    } catch (err) {
-      this.log(`Warning: /etc/pve/lxc restore failed: ${err}`);
-    }
+    // Rollback
+    this.outerSsh(`qm rollback ${this.nestedVmId} ${name}`, 120000);
 
-    // 5. Start containers
-    for (const vmId of depVmIds) {
-      try {
-        this.ssh(`pct start ${vmId}`, 30000);
-      } catch (err) {
-        this.log(`Warning: start VM ${vmId} failed: ${err}`);
-      }
-    }
+    // Start
+    this.outerSsh(`qm start ${this.nestedVmId}`, 30000);
+
+    // Wait for nested VM to be reachable via SSH
+    this.waitForNestedVm();
+
+    // Restore local context from VM (passwords match snapshot state)
+    this.restoreContext();
 
     this.log(`Rollback to @${name} complete`);
   }
 
   /**
+   * Wait for the nested VM to become reachable via SSH after boot.
+   * Polls SSH on the port-forwarded port until success or timeout.
+   */
+  private waitForNestedVm(timeoutMs = 120000): void {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        this.nestedSsh("echo ok", 5000);
+        // Extra wait for PVE to start onboot containers
+        this.sleep(5);
+        return;
+      } catch {
+        this.sleep(3);
+      }
+    }
+    throw new Error(`Nested VM not reachable via SSH after ${timeoutMs / 1000}s`);
+  }
+
+  private sleep(seconds: number): void {
+    execSync(`sleep ${seconds}`, { stdio: "ignore" });
+  }
+
+  /**
+   * Check if a snapshot's description contains the expected build hash.
+   * Returns true if no buildHash is provided (skip validation).
+   */
+  private matchesBuild(name: string, buildHash?: string): boolean {
+    if (!buildHash) return true;
+    try {
+      const output = this.outerSsh(
+        `qm listsnapshot ${this.nestedVmId}`,
+        15000,
+      );
+      // qm listsnapshot format: " `-> name   date   description"
+      for (const line of output.split("\n")) {
+        if (line.includes(` ${name} `) || line.includes(` ${name}\t`)) {
+          return line.includes(`build:${buildHash}`);
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Find the best (latest) snapshot for a dependency chain.
    * Walks backwards through deps and returns the first existing snapshot.
-   * That snapshot contains the cumulative state of all previous dependencies.
+   * If buildHash is provided, only snapshots matching the hash are considered.
    */
-  findBestSnapshot(depScenarioIds: string[]): { name: string; index: number } | null {
+  findBestSnapshot(depScenarioIds: string[], buildHash?: string): { name: string; index: number } | null {
     for (let i = depScenarioIds.length - 1; i >= 0; i--) {
       const name = this.snapshotName(depScenarioIds[i]!);
-      if (this.exists(name)) {
+      if (this.exists(name) && this.matchesBuild(name, buildHash)) {
         return { name, index: i };
       }
     }
