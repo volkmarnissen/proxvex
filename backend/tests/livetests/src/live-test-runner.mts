@@ -243,6 +243,7 @@ async function executeScenarios(
   projectRoot: string,
   appMetaMap: Map<string, AppMeta>,
   allTests: Map<string, ResolvedScenario>,
+  stackIdMap: Map<string, string[]>,
   resultWriter?: TestResultWriter,
   fixtureBaseDir?: string,
 ): Promise<TestResult> {
@@ -421,7 +422,13 @@ async function executeScenarios(
       if (buildResult.stackId) {
         paramsObj.stackId = buildResult.stackId;
       } else if (step.hasStacktype) {
-        paramsObj.stackId = step.stackName;
+        // Use per-app stackIds (e.g. postgres→["postgres_default"], zitadel→["postgres_default","oidc_default"])
+        const appStackIds = stackIdMap.get(`${scenario.application}/${step.stackName}`);
+        if (appStackIds && appStackIds.length > 1) {
+          paramsObj.stackIds = appStackIds;
+        } else if (appStackIds && appStackIds.length === 1) {
+          paramsObj.stackId = appStackIds[0];
+        }
       }
 
       writeFileSync(paramsFile, JSON.stringify(paramsObj));
@@ -887,32 +894,41 @@ async function main() {
     }
   }
 
-  // Pre-create stacks: collect ALL stacktypes across all apps sharing a stack,
-  // then create once — the server generates secrets for all stacktype variables.
-  // If a stack already exists, reuse it to keep passwords stable across runs.
-  const stackAllTypes = new Map<string, Set<string>>();
+  // Pre-create stacks: one stack per stacktype per stackName.
+  // E.g. postgres (type:"postgres") → "postgres_default"
+  //      zitadel (type:["oidc","postgres"]) → needs "oidc_default" + "postgres_default"
+  // Apps with multiple stacktypes get multiple stackIds.
+  //
+  // stackIdMap: stackName → primary stackId (for apps with single stacktype)
+  // appStackIdsMap: application+stackName → stackId[] (for multi-type apps)
+  const stackIdMap = new Map<string, string>();
+  const appStackIdsMap = new Map<string, string[]>();
+  const stacksToCreate = new Map<string, { name: string; type: string }>();
+
   for (const p of planned) {
     const rawStacktype = appStacktypes.get(p.scenario.application);
     const stacktypes = rawStacktype ? (Array.isArray(rawStacktype) ? rawStacktype : [rawStacktype]) : [];
     if (stacktypes.length === 0) continue;
 
-    if (!stackAllTypes.has(p.stackName)) {
-      stackAllTypes.set(p.stackName, new Set(stacktypes));
-    } else {
-      for (const st of stacktypes) {
-        stackAllTypes.get(p.stackName)!.add(st);
+    const ids: string[] = [];
+    for (const st of stacktypes) {
+      const stackId = `${st}_${p.stackName}`;
+      ids.push(stackId);
+      if (!stacksToCreate.has(stackId)) {
+        stacksToCreate.set(stackId, { name: p.stackName, type: st });
       }
     }
+    // Primary stackId = first type (for single-stack apps like postgres)
+    stackIdMap.set(p.stackName, ids[0]!);
+    appStackIdsMap.set(`${p.scenario.application}/${p.stackName}`, ids);
   }
 
-  // Only delete+recreate stacks whose ALL VMs are being destroyed (not reused)
-  for (const [stackName, allTypes] of stackAllTypes) {
-    const typesArray = [...allTypes];
-
-    // Check if stack already exists
+  // Create or reuse stacks
+  for (const [stackId, { name: stackName, type: stacktype }] of stacksToCreate) {
+    // Check if stack already exists (by stackId)
     let stackExists = false;
     try {
-      const checkResp = await fetch(`${apiUrl}/api/stack/${stackName}`, {
+      const checkResp = await fetch(`${apiUrl}/api/stack/${stackId}`, {
         signal: AbortSignal.timeout(5000),
       });
       stackExists = checkResp.ok;
@@ -920,18 +936,21 @@ async function main() {
 
     if (stackExists) {
       // Check if all VMs using this stack are being re-executed (not reused)
-      const stackVms = planned.filter(p => p.stackName === stackName);
+      const stackVms = planned.filter(p => {
+        const ids = appStackIdsMap.get(`${p.scenario.application}/${p.stackName}`);
+        return ids?.includes(stackId);
+      });
       const allDestroyed = stackVms.every(p => !p.skipExecution);
       if (allDestroyed) {
         // All VMs destroyed — delete and recreate stack with fresh passwords
         try {
-          await fetch(`${apiUrl}/api/stack/${stackName}`, {
+          await fetch(`${apiUrl}/api/stack/${stackId}`, {
             method: "DELETE", signal: AbortSignal.timeout(5000),
           });
         } catch { /* ignore */ }
         stackExists = false;
       } else {
-        logOk(`Stack '${stackName}' exists — reusing (passwords unchanged)`);
+        logOk(`Stack '${stackId}' exists — reusing (passwords unchanged)`);
       }
     }
 
@@ -942,13 +961,13 @@ async function main() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: stackName,
-            stacktype: typesArray.length === 1 ? typesArray[0] : typesArray,
+            stacktype,
             entries: [],
           }),
           signal: AbortSignal.timeout(10000),
         });
         if (resp.ok) {
-          logOk(`Stack '${stackName}' created (type: ${typesArray.join("+")})`);
+          logOk(`Stack '${stackId}' created (type: ${stacktype})`);
         }
       } catch {
         // Stack creation failed — may already exist from concurrent run
@@ -962,7 +981,7 @@ async function main() {
     ? path.join(projectRoot, "frontend/src/test-fixtures")
     : undefined;
   const resultWriter = new TestResultWriter(projectRoot, config.instance);
-  const result = await executeScenarios(planned, config, apiUrl, veHost, projectRoot, appMetaMap, allTests, resultWriter, fixtureBaseDir);
+  const result = await executeScenarios(planned, config, apiUrl, veHost, projectRoot, appMetaMap, allTests, appStackIdsMap, resultWriter, fixtureBaseDir);
   const allResults = [result];
 
   // Collect diagnostics before cleanup (VMs still running)
@@ -1009,6 +1028,12 @@ async function main() {
   } else {
     console.log(`${GREEN}PASSED${NC} - All tests passed`);
   }
+}
+
+/** Compute stackId from stacktypes + name (mirrors server logic in webapp-stack-routes.mts) */
+function computeStackId(stackName: string, stacktypes: string[]): string {
+  const typePrefix = [...stacktypes].sort().join("_");
+  return `${typePrefix}_${stackName}`;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1102,10 +1127,14 @@ async function runQueueWorker(
         { name: "bridge", value: config.bridge },
         { name: "vm_id", value: String(vmId) },
       ];
+      const stacktypesArr = appMeta.stacktype
+        ? (Array.isArray(appMeta.stacktype) ? appMeta.stacktype : [appMeta.stacktype])
+        : [];
+      const primaryStackId = stacktypesArr.length > 0 ? `${stacktypesArr[0]}_${stackName}` : stackName;
       const templateVars: Record<string, string> = {
         vm_id: String(vmId),
         hostname,
-        stack_name: stackName,
+        stack_id: primaryStackId,
       };
 
       const buildResult = buildParams(scenario, baseParams, templateVars, tmpDir);
@@ -1126,7 +1155,14 @@ async function runQueueWorker(
       if (buildResult.stackId) {
         paramsObj.stackId = buildResult.stackId;
       } else if (hasStacktype) {
-        paramsObj.stackId = stackName;
+        // Each stacktype gets its own stack: e.g. ["oidc","postgres"] → ["oidc_default","postgres_default"]
+        const stacktypes = Array.isArray(appMeta.stacktype) ? appMeta.stacktype : [appMeta.stacktype];
+        const ids = stacktypes.map(st => `${st}_${stackName}`);
+        if (ids.length > 1) {
+          paramsObj.stackIds = ids;
+        } else if (ids.length === 1) {
+          paramsObj.stackId = ids[0];
+        }
       }
       writeFileSync(paramsFile, JSON.stringify(paramsObj));
 
