@@ -10,10 +10,12 @@ import {
   IApplicationFrameworkDataResponse,
   ICompatibleAddonsResponse,
   ITestScenariosResponse,
+  IApplicationOverviewResponse,
 } from "@src/types.mjs";
 import { ContextManager } from "../context-manager.mjs";
 import { PersistenceManager } from "../persistence/persistence-manager.mjs";
 import { ITemplateProcessorLoadResult } from "../templates/templateprocessor.mjs";
+import { ApplicationOverviewBuilder } from "../services/application-overview-builder.mjs";
 import { sendErrorResponse, asyncHandler } from "./webapp-error-utils.mjs";
 
 type ReturnResponse = <T>(
@@ -160,6 +162,24 @@ export function registerApplicationRoutes(
           veContext,
         );
       returnResponse<ITemplateProcessorLoadResult>(res, application);
+    }),
+  );
+
+  app.get(
+    ApiUri.ApplicationOverview,
+    asyncHandler(async (req, res) => {
+      const applicationId = String(req.params.applicationId);
+      const task = (String(req.query.task || "installation")) as TaskType;
+      const vmId = req.query.vm_id ? Number(req.query.vm_id) : undefined;
+      const veContextKey = req.query.veContext ? String(req.query.veContext) : undefined;
+      const veContext = veContextKey ? storageContext.getVEContextByKey(veContextKey) : undefined;
+      const builder = new ApplicationOverviewBuilder(
+        pm.getPathes(),
+        pm,
+        storageContext,
+      );
+      const overview = await builder.build(applicationId, task, veContext ?? undefined, vmId);
+      returnResponse<IApplicationOverviewResponse>(res, overview);
     }),
   );
 

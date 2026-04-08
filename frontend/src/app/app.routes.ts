@@ -7,6 +7,7 @@ import { SshConfigPage } from './ssh-config-page/ssh-config-page';
 import { CreateApplication } from './create-application/create-application';
 import { InstalledList } from './installed-list/installed-list';
 import { StacksPage } from './stacks-page/stacks-page';
+import { ApplicationOverview } from './application-overview/application-overview';
 import { authGuard } from './auth/auth.guard';
 
 export const routes: Routes = [
@@ -17,5 +18,7 @@ export const routes: Routes = [
   { path: 'ssh-config', component: SshConfigPage, canActivate: [authGuard] },
   { path: 'create-application', component: CreateApplication, canActivate: [authGuard] },
 	{ path: 'installations', component: InstalledList, canActivate: [authGuard] },
+	{ path: ':veContextKey/installations', component: InstalledList, canActivate: [authGuard] },
   { path: 'stacks', component: StacksPage, canActivate: [authGuard] },
+  { path: 'application-overview/:applicationId', component: ApplicationOverview, canActivate: [authGuard] },
 ];

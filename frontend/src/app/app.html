@@ -1,3 +1,4 @@
+@if (!hideHeader) {
 <header class="app-header">
   <img class="app-logo" src="/favicon.svg" alt="Logo" width="24" height="24" />
   <span class="app-title">Proxmox WebApp</span>
@@ -21,7 +22,7 @@
     <button class="header-btn" type="button" aria-label="Applications" routerLink="/applications" matTooltip="Applications">
       <mat-icon aria-hidden="true">apps</mat-icon>
     </button>
-    <button class="header-btn" type="button" aria-label="Installations" routerLink="/installations" matTooltip="Installed Containers">
+    <button class="header-btn" type="button" aria-label="Installations" [routerLink]="installationsRoute()" matTooltip="Installed Containers">
       <mat-icon aria-hidden="true">inventory_2</mat-icon>
     </button>
     <button class="header-btn" type="button" aria-label="Secrets" routerLink="/stacks" matTooltip="Secrets">
@@ -44,5 +45,6 @@
     }
   </span>
 </header>
+}
 
 <router-outlet></router-outlet>
