@@ -164,6 +164,26 @@ export class VeExecution extends EventEmitter {
   }
 
   /**
+   * Load global VE libraries (ve-global.sh, ve-global.py) from the repository.
+   * These are auto-injected into all execute_on:ve scripts.
+   */
+  private loadGlobalVeLibraries(): Map<string, string> {
+    const libs = new Map<string, string>();
+    const repos = this.resolveRepositories();
+    if (!repos) return libs;
+
+    for (const [lang, filename] of [["sh", "ve-global.sh"], ["py", "ve-global.py"]] as const) {
+      const content = repos.getScript({
+        name: filename,
+        scope: "shared",
+        category: "library",
+      });
+      if (content) libs.set(lang, content);
+    }
+    return libs;
+  }
+
+  /**
    * Updates helper modules with current state (called when state might have changed).
    */
   private updateHelperModules(): void {
@@ -209,6 +229,7 @@ export class VeExecution extends EventEmitter {
         this.outputsRaw = raw;
       },
       resolveApplicationToVmId: (appId) => this.resolveApplicationToVmId(appId),
+      globalVeLibraries: this.loadGlobalVeLibraries(),
     });
     this.stateManager = new VeExecutionStateManager({
       outputs: this.outputs,
@@ -436,6 +457,8 @@ export class VeExecution extends EventEmitter {
     vm_id: string | number,
     command: string,
     tmplCommand: ICommand,
+    execUid?: number,
+    execGid?: number,
     timeoutMs?: number,
   ): Promise<IVeExecuteMessage> {
     // In test mode, lxc-attach is not needed - execute locally
@@ -444,8 +467,11 @@ export class VeExecution extends EventEmitter {
       return await this.runOnVeHost(command, tmplCommand, timeoutMs);
     }
 
-    // Production: use lxc-attach
-    const lxcCmd = ["lxc-attach", "-n", String(vm_id), "--"];
+    // Production: use lxc-attach with optional uid/gid
+    const lxcCmd = ["lxc-attach", "-n", String(vm_id)];
+    if (execUid !== undefined && !isNaN(execUid)) lxcCmd.push("--uid", String(execUid));
+    if (execGid !== undefined && !isNaN(execGid)) lxcCmd.push("--gid", String(execGid));
+    lxcCmd.push("--");
 
     // In production mode, we need to execute via SSH with lxc-attach
     // But interpreter from shebang should still be respected

@@ -12,6 +12,8 @@ export interface CommandProcessorDependencies {
     vm_id: string | number,
     command: string,
     tmplCommand: ICommand,
+    execUid?: number,
+    execGid?: number,
     timeoutMs?: number,
   ) => Promise<IVeExecuteMessage>;
   runOnVeHost: (
@@ -33,6 +35,8 @@ export interface CommandProcessorDependencies {
    * Throws if 0 or 2+ containers match.
    */
   resolveApplicationToVmId?: (appId: string) => Promise<number>;
+  /** Global VE libraries keyed by language: "sh" -> content, "py" -> content */
+  globalVeLibraries?: Map<string, string>;
 }
 
 /**
@@ -186,8 +190,36 @@ export class VeExecutionCommandProcessor {
   }
 
   /**
+   * Detect script language from content (shebang or file extension).
+   * Returns "sh" for shell, "py" for Python.
+   */
+  private detectLanguage(content: string): "sh" | "py" {
+    const firstLine = content.split("\n")[0] ?? "";
+    if (/python/.test(firstLine)) return "py";
+    if (/\.py$/.test(firstLine)) return "py";
+    return "sh";
+  }
+
+  /**
+   * Get global VE library content for the given language, if available.
+   */
+  private getGlobalVeLibrary(content: string): string | null {
+    if (!this.deps.globalVeLibraries) return null;
+    const lang = this.detectLanguage(content);
+    return this.deps.globalVeLibraries.get(lang) ?? null;
+  }
+
+  /**
+   * Check if command targets the VE host (execute_on: "ve").
+   */
+  private isVeTarget(cmd: ICommand): boolean {
+    return cmd.execute_on === "ve";
+  }
+
+  /**
    * Loads command content from script file or command string.
    * If a library is specified, it will be prepended to the content.
+   * For VE-target commands, the global VE library is always prepended.
    * Extracts interpreter from library's shebang when library is present,
    * otherwise from script's shebang.
    */
@@ -227,19 +259,36 @@ export class VeExecutionCommandProcessor {
         }
       }
 
-      // If library is specified, prepend it
-      if (cmd.libraryContent !== undefined) {
-        return `${cmd.libraryContent}\n\n# --- Script starts here ---\n${scriptContent}`;
+      // Assemble: global VE library + template library + script
+      const globalLib = this.isVeTarget(cmd)
+        ? this.getGlobalVeLibrary(cmd.libraryContent ?? scriptContent)
+        : null;
+
+      if (globalLib || cmd.libraryContent !== undefined) {
+        const parts: string[] = [];
+        if (globalLib) parts.push(globalLib);
+        if (cmd.libraryContent !== undefined) parts.push(cmd.libraryContent);
+        const libBlock = parts.join("\n\n");
+        return `${libBlock}\n\n# --- Script starts here ---\n${scriptContent}`;
       }
 
       return scriptContent;
     } else if (cmd.script !== undefined) {
       throw new Error(`Script content missing for ${cmd.script}`);
     } else if (cmd.command !== undefined) {
-      // Support library with command (not just script)
-      if (cmd.libraryContent !== undefined) {
-        return `${cmd.libraryContent}\n\n# --- Command starts here ---\n${cmd.command}`;
+      // Assemble: global VE library + template library + command
+      const globalLib = this.isVeTarget(cmd)
+        ? this.getGlobalVeLibrary(cmd.libraryContent ?? cmd.command)
+        : null;
+
+      if (globalLib || cmd.libraryContent !== undefined) {
+        const parts: string[] = [];
+        if (globalLib) parts.push(globalLib);
+        if (cmd.libraryContent !== undefined) parts.push(cmd.libraryContent);
+        const libBlock = parts.join("\n\n");
+        return `${libBlock}\n\n# --- Command starts here ---\n${cmd.command}`;
       }
+
       return cmd.command;
     }
     return null;
@@ -275,7 +324,33 @@ export class VeExecutionCommandProcessor {
       throw new Error(cmd.name + " is missing the execute_on property");
     }
 
-    switch (cmd.execute_on) {
+    // Normalize execute_on: extract target string and optional uid/gid flags
+    let target: string;
+    let useUid = false;
+    let useGid = false;
+    if (typeof cmd.execute_on === "object" && cmd.execute_on !== null) {
+      target = (cmd.execute_on as { where: string }).where;
+      useUid = !!(cmd.execute_on as { uid?: boolean }).uid;
+      useGid = !!(cmd.execute_on as { gid?: boolean }).gid;
+    } else {
+      target = cmd.execute_on as string;
+    }
+
+    // Resolve uid/gid from application config if flags are set
+    let execUid: number | undefined;
+    let execGid: number | undefined;
+    if (useUid || useGid) {
+      const resolvedUid = this.deps.variableResolver.replaceVars("{{ uid }}");
+      const resolvedGid = this.deps.variableResolver.replaceVars("{{ gid }}");
+      if (useUid && resolvedUid && resolvedUid !== "NOT_DEFINED" && !resolvedUid.includes("{{")) {
+        execUid = parseInt(resolvedUid, 10);
+      }
+      if (useGid && resolvedGid && resolvedGid !== "NOT_DEFINED" && !resolvedGid.includes("{{")) {
+        execGid = parseInt(resolvedGid, 10);
+      }
+    }
+
+    switch (target) {
       case "lxc": {
         const execStrLxc = this.deps.variableResolver.replaceVars(rawStr);
         const vm_id = this.getVmId();
@@ -285,9 +360,7 @@ export class VeExecutionCommandProcessor {
           this.deps.messageEmitter.emitStandardMessage(cmd, msg, null, -1, -1);
           throw new Error(msg);
         }
-        // When sshCommand !== "ssh", runOnLxc will set remoteCommand to undefined
-        // to execute locally. We don't need to pass it explicitly here.
-        await this.deps.runOnLxc(vm_id, execStrLxc, cmd);
+        await this.deps.runOnLxc(vm_id, execStrLxc, cmd, execUid, execGid);
         return undefined;
       }
       case "ve": {
@@ -295,30 +368,22 @@ export class VeExecutionCommandProcessor {
         return await this.deps.runOnVeHost(execStrVe, cmd);
       }
       default: {
-        if (
-          typeof cmd.execute_on === "string" &&
-          /^host:.*/.test(cmd.execute_on)
-        ) {
-          const hostname = cmd.execute_on.split(":")[1] ?? "";
-          // Pass raw (unreplaced) string; executeOnHost will replace with vmctx.data
+        if (/^host:.*/.test(target)) {
+          const hostname = target.split(":")[1] ?? "";
           await this.deps.executeOnHost(hostname, rawStr, cmd);
           return undefined;
-        } else if (
-          typeof cmd.execute_on === "string" &&
-          /^application:.*/.test(cmd.execute_on)
-        ) {
-          // Execute on a container identified by application_id
-          const appId = cmd.execute_on.slice("application:".length).trim();
+        } else if (/^application:.*/.test(target)) {
+          const appId = target.slice("application:".length).trim();
           if (!this.deps.resolveApplicationToVmId) {
             throw new Error("resolveApplicationToVmId is not configured");
           }
           const vm_id = await this.deps.resolveApplicationToVmId(appId);
           const execStr = this.deps.variableResolver.replaceVars(rawStr);
-          await this.deps.runOnLxc(vm_id, execStr, cmd);
+          await this.deps.runOnLxc(vm_id, execStr, cmd, execUid, execGid);
           return undefined;
         } else {
           throw new Error(
-            cmd.name + " has invalid execute_on: " + cmd.execute_on,
+            cmd.name + " has invalid execute_on: " + target,
           );
         }
       }
