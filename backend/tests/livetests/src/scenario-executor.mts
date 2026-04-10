@@ -104,7 +104,16 @@ export async function executeScenarios(
     : null;
 
   // OIDC credentials for delegated access (loaded after Zitadel installation)
+  // Only used if the deployer itself has OIDC enabled (not for app-level OIDC addons)
   let oidcCredentials: { issuerUrl: string; clientId: string; clientSecret: string } | undefined;
+  let deployerOidcEnabled = false;
+  try {
+    const authResp = await fetch(`${apiUrl}/api/auth/config`, { signal: AbortSignal.timeout(3000) });
+    if (authResp.ok) {
+      const authConfig = await authResp.json() as { enabled?: boolean };
+      deployerOidcEnabled = !!authConfig.enabled;
+    }
+  } catch { /* deployer has no OIDC */ }
 
   try {
     for (let i = 0; i < planned.length; i++) {
@@ -212,11 +221,19 @@ export async function executeScenarios(
         logInfo("Deployer reload not available (continuing)");
       }
 
+      // Collect VMIDs of all dependency containers installed so far
+      // (used for per-container snapshots)
+      const depVmIds = planned
+        .slice(0, i)
+        .filter((p) => allDepIds.has(p.scenario.id) && p.skipExecution)
+        .map((p) => p.vmId);
+
       // Pre-test snapshot: save state before execution so we can rollback on failure
       const preTestSnapName = snapMgr ? `pre-${scenario.id.replace("/", "-")}` : null;
+      const preTestVmIds = [...depVmIds, step.vmId];
       if (snapMgr && preTestSnapName && !step.isDependency) {
         try {
-          snapMgr.create(preTestSnapName, buildHash);
+          snapMgr.create(preTestSnapName, buildHash, preTestVmIds);
           logInfo(`Pre-test snapshot @${preTestSnapName} created`);
         } catch {
           logInfo("Warning: pre-test snapshot failed (non-fatal)");
@@ -228,8 +245,8 @@ export async function executeScenarios(
       const scenarioFixtureDir = fixtureBaseDir
         ? path.join(fixtureBaseDir, scenario.id.replace("/", "-"))
         : undefined;
-      // Use OIDC credentials for scenarios with addon-oidc (delegated access)
-      const useOidc = oidcCredentials && allAddons.includes("addon-oidc");
+      // Use OIDC credentials only if the deployer itself requires OIDC auth
+      const useOidc = deployerOidcEnabled && oidcCredentials;
       const cliResult = await runCli(
         projectRoot, apiUrl, veHost,
         paramsFile, allAddons, scenario.cli_timeout, scenarioFixtureDir,
@@ -244,7 +261,7 @@ export async function executeScenarios(
         if (snapMgr && preTestSnapName) {
           try {
             logInfo(`Rolling back to @${preTestSnapName} (restoring pre-test state)`);
-            snapMgr.rollback(preTestSnapName);
+            snapMgr.rollback(preTestSnapName, preTestVmIds);
             logOk("Pre-test state restored");
           } catch {
             logInfo("Warning: pre-test rollback failed");
@@ -412,7 +429,7 @@ export async function executeScenarios(
       // Clean up pre-test snapshot on success (no longer needed)
       if (snapMgr && preTestSnapName && !step.isDependency) {
         try {
-          snapMgr.deleteSnapshot(preTestSnapName);
+          snapMgr.deleteSnapshot(preTestSnapName, preTestVmIds);
         } catch { /* ignore */ }
       }
 
@@ -420,9 +437,14 @@ export async function executeScenarios(
       if (snapMgr && allDepIds.has(step.scenario.id) && !step.skipExecution) {
         try {
           const depSnapName = snapMgr.snapshotName(step.scenario.id);
-          snapMgr.create(depSnapName, buildHash);
+          // Snapshot all dependency containers installed up to and including this one
+          const depGroupVmIds = planned
+            .slice(0, i + 1)
+            .filter((p) => allDepIds.has(p.scenario.id))
+            .map((p) => p.vmId);
+          snapMgr.create(depSnapName, buildHash, depGroupVmIds);
         } catch (err) {
-          logInfo(`VM snapshot creation failed (non-fatal): ${err}`);
+          logInfo(`Snapshot creation failed (non-fatal): ${err}`);
         }
       }
     }
