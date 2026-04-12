@@ -32,6 +32,14 @@
       "multiline": true,
       "default": "",
       "description": "Environment variables to substitute in initial_command."
+    },
+    {
+      "id": "wait_for_network",
+      "name": "Wait for Network",
+      "type": "boolean",
+      "advanced": true,
+      "default": false,
+      "description": "Wrap entrypoint to wait for network before starting. Only needed for apps that connect to external services at startup."
     }
   ],
   "commands": [

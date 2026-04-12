@@ -23,20 +23,12 @@
       "description": "Container hostname; used in volume directory paths."
     },
     {
-      "id": "host_mountpoint",
-      "name": "Host Mountpoint",
+      "id": "volume_storage",
+      "name": "Volume Storage",
       "type": "string",
       "default": "",
-      "description": "Host mountpoint for volumes (optional).",
+      "description": "Proxmox storage ID for managed app volume.",
       "advanced": true
-    },
-    {
-      "id": "base_path",
-      "name": "Base Path",
-      "type": "string",
-      "default": "volumes",
-      "advanced": true,
-      "description": "Base subdirectory under mountpoint; default 'volumes'."
     },
     {
       "id": "volumes",
@@ -91,17 +83,21 @@
       "default": "",
       "advanced": true,
       "description": "GID mapping on the host for unprivileged containers"
+    },
+    {
+      "id": "previouse_vm_id",
+      "name": "Previous VM ID",
+      "type": "string",
+      "default": "",
+      "advanced": true,
+      "description": "Previous container VMID for upgrade/reconfigure (to find existing app volume)"
     }
   ],
   "commands": [
     {
       "script": "conf-bind-multiple-volumes-to-lxc.sh",
       "description": "Executes the script to bind multiple volumes in the container.",
-      "outputs": [
-        {
-          "id": "shared_volpath"
-        }
-      ]
+      "outputs": []
     }
   ]
 }

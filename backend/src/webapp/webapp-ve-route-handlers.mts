@@ -239,6 +239,35 @@ export class WebAppVeRouteHandlers {
       if (body.stackId && !allStackIds.includes(body.stackId)) {
         allStackIds.unshift(body.stackId);
       }
+
+      // Add addon stacktypes to allStackIds so dependency resolution
+      // can find containers in addon stacks (e.g. addon-oidc → zitadel in oidc_default)
+      const addonStackIds = body.selectedAddons ?? [];
+      if (addonStackIds.length > 0) {
+        try {
+          const addonSvc = this.pm.getAddonService();
+          const storageContext = this.pm
+            .getContextManager();
+          for (const addonId of addonStackIds) {
+            try {
+              const addon = addonSvc.getAddon(addonId);
+              if (addon?.stacktype) {
+                const addonTypes = Array.isArray(addon.stacktype) ? addon.stacktype : [addon.stacktype];
+                for (const st of addonTypes) {
+                  // Find existing stacks of this type and add their IDs
+                  const stacks = storageContext.listStacks(st);
+                  for (const stack of stacks) {
+                    if (!allStackIds.includes(stack.id)) {
+                      allStackIds.push(stack.id);
+                    }
+                  }
+                }
+              }
+            } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
+
       const firstStackId = allStackIds[0];
       if (firstStackId) {
         initialInputs.push({ id: "stack_id", value: firstStackId });
@@ -305,6 +334,14 @@ export class WebAppVeRouteHandlers {
       if (allRequestedAddons.some((a: string) => a === "addon-ssl" || a === "addon-acme")) {
         if (!initialInputs.some(p => p.id === "ca_key_b64")) {
           initialInputs.push({ id: "ca_key_b64", value: "pending" });
+        }
+      }
+
+      // For in-place upgrade/reconfigure without create_ct: vm_id = previouse_vm_id
+      if (!initialInputs.some(p => p.id === "vm_id") && initialInputs.some(p => p.id === "previouse_vm_id")) {
+        const prev = initialInputs.find(p => p.id === "previouse_vm_id");
+        if (prev) {
+          initialInputs.push({ id: "vm_id", value: prev.value });
         }
       }
 
@@ -460,6 +497,14 @@ export class WebAppVeRouteHandlers {
       );
       defaults.set("task", task);
       defaults.set("task_type", task);
+
+      // For in-place upgrade/reconfigure: vm_id = previouse_vm_id if not explicitly set
+      if (!defaults.has("vm_id")) {
+        const prevParam = paramsToUse.find(p => p.name === "previouse_vm_id");
+        if (prevParam && prevParam.value !== undefined && prevParam.value !== "") {
+          defaults.set("vm_id", String(prevParam.value));
+        }
+      }
 
       // Log viewer URL parameters for Notes links
       // Priority: OCI_LXC_DEPLOYER_URL env var > auto-generated from hostname + port
