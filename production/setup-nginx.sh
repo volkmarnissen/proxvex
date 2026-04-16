@@ -13,10 +13,15 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# --- Find nginx container ---
-NGINX_VMID=$(pct list | awk '/nginx/{print $1}')
+# --- Find nginx container (match hostname column exactly, not anywhere) ---
+NGINX_VMID=$(pct list | awk '$NF == "nginx" {print $1}')
 if [ -z "$NGINX_VMID" ]; then
   echo "ERROR: nginx container not found"
+  exit 1
+fi
+if [ "$(echo "$NGINX_VMID" | wc -l)" -gt 1 ]; then
+  echo "ERROR: multiple nginx containers found: $(echo $NGINX_VMID | tr '\n' ' ')"
+  echo "       Clean up the unwanted ones before running this script."
   exit 1
 fi
 echo "Nginx VMID: $NGINX_VMID"
@@ -29,8 +34,14 @@ if [ "$STATUS" != "running" ]; then
 fi
 
 # --- Cert and port config ---
+# nginx runs rootless (uid 101) and cannot bind ports < 1024, so TLS
+# terminates on 1443. The router DNATs 443 → 1443 (see production/dns.sh).
 CERT_DIR="/etc/ssl/addon"
-LISTEN_PORT=8080
+LISTEN_PORT=1443
+SSL_DIRECTIVES="    ssl_certificate     ${CERT_DIR}/fullchain.pem;
+    ssl_certificate_key ${CERT_DIR}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;"
 
 # --- Create temp dir ---
 TMPDIR=$(mktemp -d)
@@ -43,15 +54,17 @@ echo "=== Writing nginx config files ==="
 cat > "$TMPDIR/default.conf" <<EOF
 # Default: reject unknown domains
 server {
-    listen ${LISTEN_PORT} default_server;
+    listen ${LISTEN_PORT} ssl default_server;
+${SSL_DIRECTIVES}
     return 444;
 }
 EOF
 
 cat > "$TMPDIR/ohnewarum.conf" <<EOF
 server {
-    listen ${LISTEN_PORT};
+    listen ${LISTEN_PORT} ssl;
     server_name ohnewarum.de;
+${SSL_DIRECTIVES}
     root /usr/share/nginx/html/ohnewarum;
     index index.html;
 }
@@ -59,8 +72,9 @@ EOF
 
 cat > "$TMPDIR/nebenkosten.conf" <<EOF
 server {
-    listen ${LISTEN_PORT};
+    listen ${LISTEN_PORT} ssl;
     server_name nebenkosten.ohnewarum.de;
+${SSL_DIRECTIVES}
     root /usr/share/nginx/html/nebenkosten;
     index index.html;
     try_files \$uri \$uri/ /index.html;
@@ -69,33 +83,45 @@ EOF
 
 cat > "$TMPDIR/auth.conf" <<EOF
 server {
-    listen ${LISTEN_PORT};
+    listen ${LISTEN_PORT} ssl;
     server_name auth.ohnewarum.de;
+${SSL_DIRECTIVES}
     location / {
         proxy_pass https://zitadel:1443;
+        proxy_http_version 1.1;
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate ${CERT_DIR}/chain.pem;
+        proxy_ssl_server_name on;
+        proxy_ssl_name zitadel;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port 443;
     }
 }
 EOF
 
 cat > "$TMPDIR/git.conf" <<EOF
 server {
-    listen ${LISTEN_PORT};
+    listen ${LISTEN_PORT} ssl;
     server_name git.ohnewarum.de;
+${SSL_DIRECTIVES}
     client_max_body_size 512m;
     location / {
         proxy_pass https://gitea:443;
+        proxy_http_version 1.1;
         proxy_ssl_verify on;
         proxy_ssl_trusted_certificate ${CERT_DIR}/chain.pem;
+        proxy_ssl_server_name on;
+        proxy_ssl_name gitea;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port 443;
     }
 }
 EOF
@@ -138,11 +164,21 @@ pct exec "$NGINX_VMID" -- chown -R 101:101 /etc/nginx/conf.d/
 echo "  Ownership set to 101:101"
 
 # --- 4. Reload nginx ---
+# We send SIGHUP directly via `nginx -s reload` and skip a preliminary
+# `nginx -t` pass: running it as a separate process conflicts with the
+# already-running master's /tmp/nginx.pid and /var/log/nginx/error.log (both
+# owned by uid 101) and fails with "Permission denied", aborting the reload
+# even though the config is valid. The master re-parses on SIGHUP anyway: if
+# the new config is broken it logs and keeps the old one, so we still get
+# safe behaviour.
 echo ""
 echo "=== Reloading nginx ==="
-pct exec "$NGINX_VMID" -- nginx -t 2>&1 && \
-  pct exec "$NGINX_VMID" -- nginx -s reload 2>&1
-echo "  nginx reloaded"
+if pct exec "$NGINX_VMID" -- nginx -s reload 2>&1; then
+  echo "  nginx reloaded"
+else
+  echo "ERROR: nginx -s reload failed (see output above)" >&2
+  exit 1
+fi
 
 echo ""
 echo "=== Nginx setup complete ==="
