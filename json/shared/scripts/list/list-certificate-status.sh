@@ -66,9 +66,12 @@ if command -v pvesm >/dev/null 2>&1; then
   for volid in $VOLIDS; do
     volname="${volid##*:}"
 
-    # Skip root disks (subvol-<VMID>-disk-N)
+    # Skip root disks and stale/backup volumes. The deployer leaves *.backup
+    # and *.bak suffixes behind after destructive operations; they hold the
+    # same certs the active volume has and would produce duplicate rows.
     case "$volname" in
       subvol-*-disk-*) continue ;;
+      *.backup|*.bak|*.old) continue ;;
     esac
 
     # Extract hostname: subvol-<VMID>-<hostname>-<key> → <hostname>
@@ -85,8 +88,21 @@ if command -v pvesm >/dev/null 2>&1; then
     vpath=$(pvesm path "$volid" 2>/dev/null || true)
     [ -n "$vpath" ] && [ -d "$vpath" ] || continue
 
+    # Collect cert files, but emit only ONE "server" cert per volume: prefer
+    # fullchain.pem (leaf + chain — what's actually served), fall back to
+    # cert.pem (leaf only). CA files and keys are emitted separately.
     CERT_FILES=$(find "$vpath" \( -name "*.pem" -o -name "*.crt" \) -type f 2>/dev/null)
+    FULLCHAIN_FOUND=""
     for cf in $CERT_FILES; do
+      case "$(basename "$cf")" in
+        fullchain.pem|fullchain.crt) FULLCHAIN_FOUND="$cf"; break ;;
+      esac
+    done
+    for cf in $CERT_FILES; do
+      # Skip cert.pem if a fullchain exists (same subject, would dupe)
+      if [ -n "$FULLCHAIN_FOUND" ] && [ "$(basename "$cf")" = "cert.pem" ]; then
+        continue
+      fi
       rel="${volname}/${cf#$vpath/}"
       append_cert "$hostname" "$cf" "$rel"
     done

@@ -1,4 +1,4 @@
-import { Component, inject, signal, OnInit } from '@angular/core';
+import { Component, inject, signal, computed, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatDialogRef, MatDialogModule } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
@@ -37,7 +37,14 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
     FormsModule,
   ],
   template: `
-    <h2 mat-dialog-title>Certificate Management</h2>
+    <h2 mat-dialog-title>
+      Certificate Management
+      @if (spokeStatus()?.active) {
+        <span class="spoke-badge" matTooltip="This deployer is a Spoke. Certificates and the CA are managed by the Hub.">
+          <mat-icon>hub</mat-icon> Spoke
+        </span>
+      }
+    </h2>
     <mat-dialog-content>
       <mat-tab-group animationDuration="200ms">
 
@@ -52,9 +59,20 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
                 @if (loadingCa()) {
                   <mat-spinner diameter="24"></mat-spinner>
                 } @else if (caInfo()?.exists) {
+                  @if (spokeStatus()?.active) {
+                    <p class="ca-origin-note">
+                      <mat-icon class="inline-icon">hub</mat-icon>
+                      Synced from Hub:
+                      <span class="ca-origin-hub">{{ spokeStatus()?.hubUrl }}</span>
+                    </p>
+                  }
                   <div class="info-grid">
                     <span class="label">Subject:</span>
                     <span>{{ caInfo()?.subject }}</span>
+                    @if (caInfo()?.issued_date) {
+                      <span class="label">Issued:</span>
+                      <span>{{ caInfo()?.issued_date | date:'mediumDate' }}</span>
+                    }
                     <span class="label">Expires:</span>
                     <span>{{ caInfo()?.expiry_date | date:'mediumDate' }}</span>
                     <span class="label">Days remaining:</span>
@@ -70,11 +88,15 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
                 }
               </mat-card-content>
               <mat-card-actions>
-                <button mat-stroked-button (click)="generateCa()" [disabled]="loadingCa()">
+                <button mat-stroked-button (click)="generateCa()"
+                  [disabled]="loadingCa() || spokeStatus()?.active"
+                  [matTooltip]="spokeStatus()?.active ? 'CA is managed by the Hub in Spoke mode — generate it there.' : ''">
                   <mat-icon>add_circle</mat-icon>
                   Generate CA
                 </button>
-                <button mat-stroked-button (click)="importCa()" [disabled]="loadingCa()">
+                <button mat-stroked-button (click)="importCa()"
+                  [disabled]="loadingCa() || spokeStatus()?.active"
+                  [matTooltip]="spokeStatus()?.active ? 'CA is managed by the Hub in Spoke mode.' : ''">
                   <mat-icon>upload_file</mat-icon>
                   Import CA
                 </button>
@@ -87,19 +109,21 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
               </mat-card-actions>
             </mat-card>
 
-            <mat-card appearance="outlined">
-              <mat-card-header>
-                <mat-card-title>Domain Suffix</mat-card-title>
-              </mat-card-header>
-              <mat-card-content>
-                <mat-form-field class="domain-suffix-field" appearance="outline">
-                  <mat-label>Domain Suffix</mat-label>
-                  <input matInput [ngModel]="domainSuffix()" (ngModelChange)="domainSuffix.set($event)"
-                    (blur)="saveDomainSuffix()" placeholder=".local">
-                  <mat-hint>FQDN = hostname + suffix (e.g. myhost{{ domainSuffix() }})</mat-hint>
-                </mat-form-field>
-              </mat-card-content>
-            </mat-card>
+            @if (!spokeStatus()?.active) {
+              <mat-card appearance="outlined">
+                <mat-card-header>
+                  <mat-card-title>Domain Suffix</mat-card-title>
+                </mat-card-header>
+                <mat-card-content>
+                  <mat-form-field class="domain-suffix-field" appearance="outline">
+                    <mat-label>Domain Suffix</mat-label>
+                    <input matInput [ngModel]="domainSuffix()" (ngModelChange)="domainSuffix.set($event)"
+                      (blur)="saveDomainSuffix()" placeholder=".local">
+                    <mat-hint>FQDN = hostname + suffix (e.g. myhost{{ domainSuffix() }})</mat-hint>
+                  </mat-form-field>
+                </mat-card-content>
+              </mat-card>
+            }
           </div>
         </mat-tab>
 
@@ -211,46 +235,88 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
                 } @else if (certificates().length === 0) {
                   <p class="hint-text">No certificates found.</p>
                 } @else {
-                  <table mat-table [dataSource]="certificates()" class="cert-table">
-                    <ng-container matColumnDef="host">
-                      <th mat-header-cell *matHeaderCellDef>Host</th>
-                      <td mat-cell *matCellDef="let cert">{{ cert.host }}</td>
-                    </ng-container>
+                  @for (group of certificatesByHostIssuer(); track group.host + '|' + group.issuer) {
+                    <div class="host-group">
+                      <h4 class="host-header">
+                        <mat-icon class="host-icon">dns</mat-icon>
+                        <span>{{ group.host }}</span>
+                        <span class="host-sep">·</span>
+                        <span [matTooltip]="group.issuer">Signed by {{ group.issuerCn }}</span>
+                        <span class="host-count">({{ group.certs.length }})</span>
+                      </h4>
+                      @if (group.caIssuedDate || group.caExpiryDate) {
+                        <div class="host-subheader">
+                          @if (group.caIssuedDate) {
+                            <span>CA issued {{ group.caIssuedDate | date:'mediumDate' }}</span>
+                          }
+                          @if (group.caIssuedDate && group.caExpiryDate) {
+                            <span class="host-sep">·</span>
+                          }
+                          @if (group.caExpiryDate) {
+                            <span>expires {{ group.caExpiryDate | date:'mediumDate' }}</span>
+                          }
+                        </div>
+                      }
+                      <table mat-table [dataSource]="group.certs" class="cert-table">
+                        <ng-container matColumnDef="subject">
+                          <th mat-header-cell *matHeaderCellDef>Subject</th>
+                          <td mat-cell *matCellDef="let cert">{{ cert.subject }}</td>
+                        </ng-container>
 
-                    <ng-container matColumnDef="subject">
-                      <th mat-header-cell *matHeaderCellDef>Subject</th>
-                      <td mat-cell *matCellDef="let cert">{{ cert.subject }}</td>
-                    </ng-container>
+                        <ng-container matColumnDef="expiry">
+                          <th mat-header-cell *matHeaderCellDef>Expires</th>
+                          <td mat-cell *matCellDef="let cert">{{ cert.expiry_date | date:'mediumDate' }}</td>
+                        </ng-container>
 
-                    <ng-container matColumnDef="expiry">
-                      <th mat-header-cell *matHeaderCellDef>Expires</th>
-                      <td mat-cell *matCellDef="let cert">{{ cert.expiry_date | date:'mediumDate' }}</td>
-                    </ng-container>
+                        <ng-container matColumnDef="status">
+                          <th mat-header-cell *matHeaderCellDef></th>
+                          <td mat-cell *matCellDef="let cert">
+                            @if (cert.status === 'expired') {
+                              <mat-icon class="status-icon status-expired" matTooltip="Expired">error</mat-icon>
+                            } @else if (cert.status === 'warning') {
+                              <mat-icon class="status-icon status-warning" matTooltip="Expires within 30 days">warning</mat-icon>
+                            }
+                          </td>
+                        </ng-container>
 
-                    <ng-container matColumnDef="status">
-                      <th mat-header-cell *matHeaderCellDef></th>
-                      <td mat-cell *matCellDef="let cert">
-                        @if (cert.status === 'expired') {
-                          <mat-icon class="status-icon status-expired" matTooltip="Expired">error</mat-icon>
-                        } @else if (cert.status === 'warning') {
-                          <mat-icon class="status-icon status-warning" matTooltip="Expires within 30 days">warning</mat-icon>
-                        }
-                      </td>
-                    </ng-container>
+                        <ng-container matColumnDef="actions">
+                          <th mat-header-cell *matHeaderCellDef></th>
+                          <td mat-cell *matCellDef="let cert">
+                            @if (canRenewCert(cert)) {
+                              <button mat-icon-button color="warn"
+                                [disabled]="isRenewing(cert) || renewingAll()"
+                                (click)="renewOne(cert)"
+                                [matTooltip]="'Re-issue this certificate with current CA'">
+                                @if (isRenewing(cert)) {
+                                  <mat-spinner diameter="16"></mat-spinner>
+                                } @else {
+                                  <mat-icon>autorenew</mat-icon>
+                                }
+                              </button>
+                            }
+                          </td>
+                        </ng-container>
 
-                    <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-                    <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
-                  </table>
+                        <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+                        <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+                      </table>
+                    </div>
+                  }
                 }
               </mat-card-content>
-              <mat-card-actions>
+              <mat-card-actions class="renew-actions">
+                <div class="renew-hint">
+                  Re-issues every certificate in the list above that was signed by your <strong>current</strong> CA
+                  (<em>{{ caInfo()?.subject ? shortIssuer(caInfo()!.subject) : '—' }}</em>).
+                  New validity period, same subjects. Certificates from other CAs stay untouched.
+                </div>
                 <button mat-stroked-button color="warn" (click)="renewAll()"
-                  [disabled]="renewingAll() || certificates().length === 0"
-                  matTooltip="Force-renew every self-signed server certificate, regardless of remaining validity. Useful after rotating the root CA.">
+                  [disabled]="renewingAll() || certificates().length === 0 || !caInfo()?.exists"
+                  matTooltip="Re-sign all server certificates using the current CA. Useful after the CA was regenerated or on a fresh deployer install.">
                   @if (renewingAll()) {
                     <mat-spinner diameter="18"></mat-spinner>
                   } @else {
-                    <ng-container><mat-icon>autorenew</mat-icon> Renew All</ng-container>
+                    <ng-container><mat-icon>autorenew</mat-icon> Renew certificates with current CA</ng-container>
                   }
                 </button>
               </mat-card-actions>
@@ -268,8 +334,15 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
               </mat-card-header>
               <mat-card-content>
                 <p class="hint-text">Automatically rotate and clean up LXC console logs in /var/log/lxc/ on all PVE hosts. Rotated logs are deleted after 7 days.</p>
+                @if (spokeStatus()?.active) {
+                  <p class="hint-text warn">Log rotation runs on the Hub — this Spoke doesn't manage PVE host logs.</p>
+                }
                 <div class="auto-renewal-row">
-                  <mat-slide-toggle [checked]="logRotationEnabled()" (change)="toggleLogRotation($event.checked)">
+                  <mat-slide-toggle
+                    [checked]="logRotationEnabled()"
+                    [disabled]="spokeStatus()?.active"
+                    (change)="toggleLogRotation($event.checked)"
+                    [matTooltip]="spokeStatus()?.active ? 'Log rotation is managed on the Hub in Spoke mode.' : ''">
                     Enable daily log rotation
                   </mat-slide-toggle>
                   <span class="auto-renewal-info">
@@ -289,7 +362,9 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
                 </div>
               </mat-card-content>
               <mat-card-actions>
-                <button mat-stroked-button (click)="triggerLogRotation()" [disabled]="runningLogRotation()">
+                <button mat-stroked-button (click)="triggerLogRotation()"
+                  [disabled]="runningLogRotation() || spokeStatus()?.active"
+                  [matTooltip]="spokeStatus()?.active ? 'Log rotation is managed on the Hub in Spoke mode.' : ''">
                   @if (runningLogRotation()) {
                     <mat-spinner diameter="18"></mat-spinner>
                   } @else {
@@ -388,6 +463,100 @@ import { ICertificateStatus, ICaInfoResponse, IGenerateCertResponse, IAutoRenewa
       margin-bottom: 0.75rem;
     }
 
+    .host-group {
+      margin-bottom: 1rem;
+    }
+
+    .host-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0.75rem 0 0.25rem;
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: #444;
+    }
+
+    .host-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+      color: #888;
+    }
+
+    .host-count {
+      color: #888;
+      font-weight: 400;
+      font-size: 0.85rem;
+    }
+
+    .host-sep {
+      color: #bbb;
+    }
+
+    .host-subheader {
+      display: flex;
+      gap: 0.5rem;
+      margin: 0 0 0.5rem 1.75rem;
+      font-size: 0.8rem;
+      color: #666;
+    }
+
+    .renew-actions {
+      flex-direction: column;
+      align-items: flex-start !important;
+      gap: 0.5rem;
+    }
+
+    .renew-hint {
+      font-size: 0.85rem;
+      color: #555;
+      max-width: 60ch;
+    }
+
+    .renew-hint em {
+      font-style: normal;
+      font-weight: 500;
+    }
+
+    .ca-origin-note {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin: 0 0 0.5rem 0;
+      padding: 0.4rem 0.6rem;
+      background: #e3f2fd;
+      border-left: 3px solid #1976d2;
+      color: #0d47a1;
+      font-size: 0.85rem;
+    }
+
+    .ca-origin-hub {
+      font-family: monospace;
+      font-weight: 500;
+    }
+
+    .spoke-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      margin-left: 0.75rem;
+      padding: 0.1rem 0.5rem;
+      background: #e3f2fd;
+      border: 1px solid #90caf9;
+      border-radius: 10px;
+      color: #1565c0;
+      font-size: 0.75rem;
+      font-weight: 500;
+      vertical-align: middle;
+    }
+
+    .spoke-badge mat-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
+    }
+
     .auto-renewal-row {
       display: flex;
       align-items: center;
@@ -437,8 +606,48 @@ export class CertificateManagementDialog implements OnInit {
   loadingPve = signal(false);
   loadingCerts = signal(false);
   renewingAll = signal(false);
+  spokeStatus = signal<{ active: boolean; hubUrl?: string; synced?: boolean } | null>(null);
 
-  displayedColumns = ['host', 'subject', 'expiry', 'status'];
+  displayedColumns = ['subject', 'expiry', 'status', 'actions'];
+  /** Hostnames currently being renewed (per-row spinner state). */
+  renewingHostnames = signal<Set<string>>(new Set());
+
+  /** Group certificates by (host, issuer) so the group header can show CA info. */
+  certificatesByHostIssuer = computed(() => {
+    const ca = this.caInfo();
+    const activeCaCn = ca?.subject ? this.shortIssuer(ca.subject) : undefined;
+
+    const groups = new Map<string, { host: string; issuer: string; certs: ICertificateStatus[] }>();
+    for (const c of this.certificates()) {
+      const host = c.host || '(unknown)';
+      const issuer = c.issuer || '(unknown)';
+      const key = `${host}|||${issuer}`;
+      if (!groups.has(key)) groups.set(key, { host, issuer, certs: [] });
+      groups.get(key)!.certs.push(c);
+    }
+
+    return Array.from(groups.values())
+      .sort((a, b) => a.host.localeCompare(b.host) || a.issuer.localeCompare(b.issuer))
+      .map((g) => {
+        const issuerCn = this.shortIssuer(g.issuer);
+        const isActiveCa = !!activeCaCn && issuerCn === activeCaCn;
+        return {
+          ...g,
+          issuerCn,
+          // Only attach CA dates when issuer matches the active deployer CA;
+          // older/foreign CAs have the same CN but different expiry we don't know.
+          caIssuedDate: isActiveCa ? ca?.issued_date : undefined,
+          caExpiryDate: isActiveCa ? ca?.expiry_date : undefined,
+        };
+      });
+  });
+
+  /** Extract the CN of an X.509 issuer DN for compact display. */
+  shortIssuer(issuer: string | undefined): string {
+    if (!issuer) return '—';
+    const match = /CN\s*=\s*([^,/]+)/i.exec(issuer);
+    return match ? match[1].trim() : issuer;
+  }
 
   ngOnInit(): void {
     this.loadCaInfo();
@@ -446,6 +655,14 @@ export class CertificateManagementDialog implements OnInit {
     this.loadCertificates();
     this.loadAutoRenewalStatus();
     this.loadLogRotationStatus();
+    this.loadSpokeStatus();
+  }
+
+  private loadSpokeStatus(): void {
+    this.configService.getSpokeSyncStatus().subscribe({
+      next: (s) => this.spokeStatus.set(s),
+      error: () => this.spokeStatus.set(null),
+    });
   }
 
   private loadCaInfo(): void {
@@ -688,6 +905,46 @@ export class CertificateManagementDialog implements OnInit {
       error: (err) => {
         this.errorHandler.handleError('Failed to renew certificates', err);
         this.renewingAll.set(false);
+      }
+    });
+  }
+
+  /** A cert is renewable if its issuer matches the current CA (only then we
+   *  have the key to re-sign it). */
+  canRenewCert(cert: ICertificateStatus): boolean {
+    const ca = this.caInfo();
+    if (!ca?.exists || !ca.subject) return false;
+    const activeCn = this.shortIssuer(ca.subject);
+    return !!cert?.issuer && this.shortIssuer(cert.issuer) === activeCn;
+  }
+
+  isRenewing(cert: ICertificateStatus): boolean {
+    const hn = (cert as { hostname?: string }).hostname;
+    return !!hn && this.renewingHostnames().has(hn);
+  }
+
+  renewOne(cert: ICertificateStatus): void {
+    const hn = (cert as { hostname?: string }).hostname;
+    if (!hn) return;
+    if (!confirm(`Re-issue the certificate for "${hn}" using the current CA? The leaf cert will be replaced with the same subject but a fresh validity period.`)) return;
+
+    const next = new Set(this.renewingHostnames());
+    next.add(hn);
+    this.renewingHostnames.set(next);
+
+    this.configService.renewAllCertificates([hn]).subscribe({
+      next: (status) => {
+        const done = new Set(this.renewingHostnames());
+        done.delete(hn);
+        this.renewingHostnames.set(done);
+        this.autoRenewalStatus.set(status);
+        this.loadCertificates();
+      },
+      error: (err) => {
+        this.errorHandler.handleError(`Failed to renew certificate for ${hn}`, err);
+        const done = new Set(this.renewingHostnames());
+        done.delete(hn);
+        this.renewingHostnames.set(done);
       }
     });
   }
