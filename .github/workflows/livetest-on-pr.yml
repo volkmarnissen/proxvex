@@ -6,7 +6,9 @@ name: Livetest (non-blocking)
 #
 # Triggers:
 #   - pull_request: on changes to code paths that could affect runtime behaviour
-#   - workflow_dispatch: manual run for a specific branch + optional filter
+#   - workflow_dispatch: manual run from the GitHub UI (branch picker is
+#                        provided by GitHub natively; choose branch + optional
+#                        test filter and click "Run workflow")
 
 on:
   pull_request:
@@ -20,11 +22,6 @@ on:
       - docker/**
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to run livetest against'
-        type: string
-        required: false
-        default: main
       test_filter:
         description: 'Test filter (e.g. postgres/default, zitadel, --all)'
         type: string
@@ -70,8 +67,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
 
       - name: Materialize e2e/config.json from secret
         env:
