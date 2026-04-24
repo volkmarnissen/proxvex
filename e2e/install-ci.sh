@@ -163,13 +163,17 @@ create_lxc() {
     fi
 
     info "Creating LXC $vmid ($hostname) on $host [storage=$storage, mem=${memory}MB, disk=${disk}GB]..."
+    # All remote output (stdout + stderr) is redirected to local stderr so the
+    # function's stdout carries only the VMID returned at the end. pct destroy
+    # --force --purge writes "purging CT … from related configurations.." to
+    # stdout, which would otherwise contaminate the command substitution.
     ssh $SSH_OPTS "root@$host" "
         # Remove existing container
         if pct status $vmid &>/dev/null; then
-            echo 'Removing existing container $vmid...' >&2
-            pct stop $vmid 2>/dev/null || true
+            echo 'Removing existing container $vmid...'
+            pct stop $vmid || true
             sleep 1
-            pct destroy $vmid --force --purge 2>/dev/null || true
+            pct destroy $vmid --force --purge || true
             sleep 1
         fi
 
@@ -181,11 +185,11 @@ create_lxc() {
             --ostype $ostype \
             --unprivileged 1 \
             --features nesting=1 \
-            --arch amd64 >&2
+            --arch amd64
 
         # Remove auto-created idmap (not needed for OCI containers)
-        sed -i '/^lxc\\.idmap/d' /etc/pve/lxc/$vmid.conf 2>/dev/null || true
-    " || fail "Failed to create container $vmid on $host"
+        sed -i '/^lxc\\.idmap/d' /etc/pve/lxc/$vmid.conf || true
+    " >&2 || fail "Failed to create container $vmid on $host"
     ok "Container $vmid created"
     echo "$vmid"
 }
@@ -199,7 +203,13 @@ configure_lxc() {
     shift 2
     # remaining args: KEY=VALUE pairs for lxc.environment
 
-    local config_lines="lxc.init.cmd: /entrypoint.sh"
+    # Persist the entrypoint's console output to a host-side logfile so
+    # post-mortem debugging works (default LXC console output disappears
+    # when the container stops). Include the hostname in the name so one
+    # Proxmox host with multiple runner LXCs is distinguishable by filename.
+    local logfile="/var/log/lxc/${vmid}-${RUNNER_HOSTNAME}.console.log"
+    local config_lines="lxc.init.cmd: /entrypoint.sh
+lxc.console.logfile: ${logfile}"
     for env in "$@"; do
         config_lines="${config_lines}
 lxc.environment: ${env}"
@@ -208,7 +218,7 @@ lxc.environment: ${env}"
     ssh $SSH_OPTS "root@$host" "cat >> /etc/pve/lxc/$vmid.conf << 'CFGEOF'
 $config_lines
 CFGEOF" || fail "Failed to configure container $vmid"
-    ok "Environment configured ($# variables)"
+    ok "Environment configured ($# variables) + console logfile: ${logfile}"
 }
 
 # ============================================================
@@ -320,5 +330,6 @@ echo "Verify:"
 echo "  ssh root@$RUNNER_HOST 'pct status $RUNNER_VMID'"
 echo "  gh api /repos/${REPO_URL##*/}/actions/runners | jq '.runners[]|{name,status,labels:[.labels[].name]}'"
 echo ""
-echo "Logs:"
-echo "  ssh root@$RUNNER_HOST 'pct exec $RUNNER_VMID -- cat /var/log/lxc/*.log 2>/dev/null || pct console $RUNNER_VMID'"
+echo "Logs (entrypoint stdout/stderr, persisted via lxc.console.logfile):"
+echo "  ssh root@$RUNNER_HOST 'cat /var/log/lxc/${RUNNER_VMID}-${RUNNER_HOSTNAME}.console.log'"
+echo "  ssh root@$RUNNER_HOST 'tail -f /var/log/lxc/${RUNNER_VMID}-${RUNNER_HOSTNAME}.console.log'   # follow live"
