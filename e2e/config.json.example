@@ -1,0 +1,74 @@
+{
+  "_comment": "Template for e2e/config.json. Copy to config.json (gitignored) and replace YOUR_* placeholders. In CI, the workflow materializes config.json from the E2E_CONFIG GitHub secret — no local file needed there.",
+  "default": "green",
+  "instances": {
+    "green": {
+      "description": "Local dev env (first worktree)",
+      "pveHost": "YOUR_PVE_HOST",
+      "vmId": 9000,
+      "vmName": "pve-e2e-green",
+      "portOffset": 0,
+      "subnet": "10.99.1",
+      "bridge": "vmbr1",
+      "filesystem": "zfs",
+      "deployerHost": "localhost",
+      "deployerPort": "${DEPLOYER_PORT:-3201}",
+      "snapshot": { "enabled": true },
+      "registryMirror": { "dnsForwarder": "YOUR_UPSTREAM_DNS" },
+      "portForwarding": [
+        { "port": 1808, "hostname": "zitadel-default", "ip": "10.0.0.226", "containerPort": 1443 },
+        { "port": 1809, "hostname": "gitea-default",   "ip": "10.0.0.203", "containerPort": 3000 }
+      ]
+    },
+    "yellow": {
+      "description": "Local dev env (second worktree)",
+      "pveHost": "YOUR_PVE_HOST",
+      "vmId": 9002,
+      "vmName": "pve-e2e-yellow",
+      "portOffset": 200,
+      "subnet": "10.99.3",
+      "bridge": "vmbr3",
+      "filesystem": "zfs",
+      "deployerHost": "localhost",
+      "deployerPort": "${DEPLOYER_PORT:-3301}",
+      "snapshot": { "enabled": true },
+      "registryMirror": { "dnsForwarder": "YOUR_UPSTREAM_DNS" },
+      "portForwarding": [
+        { "port": 2808, "hostname": "zitadel-default", "ip": "10.0.0.226", "containerPort": 1443 },
+        { "port": 2809, "hostname": "gitea-default",   "ip": "10.0.0.203", "containerPort": 3000 }
+      ]
+    },
+    "github-action": {
+      "description": "GitHub Actions CI testing",
+      "pveHost": "YOUR_PVE_HOST",
+      "vmId": 9001,
+      "vmName": "pve-e2e-ci",
+      "portOffset": 1000,
+      "subnet": "10.99.2",
+      "bridge": "vmbr2",
+      "filesystem": "ext4"
+    }
+  },
+  "defaults": {
+    "vmMemory": 4096,
+    "vmCores": 2,
+    "vmDiskSize": 100,
+    "vmStorage": "local-zfs",
+    "filesystem": "zfs",
+    "swapSize": 4,
+    "nestedPassword": "CHANGE_ME",
+    "owner": "proxvex",
+    "ociOwner": "proxvex",
+    "deployerVmid": 300,
+    "deployerBridge": "vmbr1",
+    "deployerStaticIp": "10.0.0.100/24",
+    "deployerGateway": "10.0.0.1"
+  },
+  "ports": {
+    "pveWeb": 1008,
+    "pveSsh": 1022,
+    "deployer": 1080,
+    "deployerHttps": 1443,
+    "testWorkerSsh": 2222
+  }
+}

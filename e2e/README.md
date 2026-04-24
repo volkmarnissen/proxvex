@@ -9,6 +9,21 @@ End-to-end tests using a nested Proxmox VM to test the full deployment workflow.
 - Sufficient resources on the host (4GB RAM, 32GB disk for test VM)
 - `jq` installed locally (for config parsing)
 
+### Initial config setup (local)
+
+`e2e/config.json` contains infrastructure details (PVE host, subnets, IPs) and
+is gitignored. Copy the template and fill in your values once:
+
+```bash
+cp e2e/config.json.example e2e/config.json
+$EDITOR e2e/config.json    # replace YOUR_PVE_HOST / YOUR_UPSTREAM_DNS / CHANGE_ME
+```
+
+For CI runs: the `livetest-on-pr.yml` and `refresh-mirrors-on-main.yml` workflows
+materialize `e2e/config.json` from the GitHub Actions repo secret
+**`E2E_CONFIG`** (paste the full JSON blob as the secret value). Without that
+secret the workflows fail fast with a clear error.
+
 ## Quick Start
 
 ```bash
