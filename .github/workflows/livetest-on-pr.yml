@@ -39,6 +39,7 @@ permissions:
 jobs:
   check-runner:
     runs-on: ubuntu-latest
+    environment: livetest
     outputs:
       runner_online: ${{ steps.probe.outputs.runner_online }}
     steps:
