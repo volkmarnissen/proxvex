@@ -80,6 +80,22 @@ vol_alloc() {
     _vol_vid=$(vol_extract_volid "$_vol_raw")
     if [ -n "$_vol_vid" ]; then
       rm -f "$_vol_errfile"
+      # LVM/LVM-thin allocations return an unformatted raw block device.
+      # `pct start` and `pct mount` both require a filesystem on mp volumes
+      # (pct only formats the rootfs itself, not extra mp volumes). Match
+      # the filesystem pct uses for rootfs LVs: ext4.
+      case "$(vol_get_storage_type "$_vol_storage")" in
+        lvm|lvmthin)
+          _vol_dev=$(pvesm path "$_vol_vid" 2>/dev/null || true)
+          if [ -n "$_vol_dev" ] && [ -b "$_vol_dev" ] \
+             && ! blkid "$_vol_dev" >/dev/null 2>&1; then
+            if ! mkfs.ext4 -q -F "$_vol_dev" >&2; then
+              echo "vol_alloc: mkfs.ext4 on $_vol_dev failed" >&2
+              return 1
+            fi
+          fi
+          ;;
+      esac
       echo "$_vol_vid"
       return 0
     fi

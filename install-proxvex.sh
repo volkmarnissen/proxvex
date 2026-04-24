@@ -630,8 +630,28 @@ fi
 
 # Resolve volume paths via managed volume lookup (sanitize hostname to match volume names)
 _safe_host=$(echo "$hostname" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-config_volume_path=$(resolve_host_volume "$_safe_host" "config")
-secure_volume_path=$(resolve_host_volume "$_safe_host" "secure")
+config_volume_path=$(resolve_host_volume "$_safe_host" "config" 2>/dev/null || true)
+secure_volume_path=$(resolve_host_volume "$_safe_host" "secure" 2>/dev/null || true)
+
+# For block-based storage (LVM / LVM-thin) the managed volumes are raw LVs
+# that only become filesystem-accessible once mounted. Use `pct mount` to
+# expose them as directories under /var/lib/lxc/<vmid>/rootfs/<mp> so the
+# storagecontext.json write below works the same way for both ZFS and LVM.
+# Unmounted again below, before `pct start`.
+_pct_mounted=0
+if [ ! -d "$config_volume_path" ] || [ ! -d "$secure_volume_path" ]; then
+  log "Volumes not directory-accessible — using 'pct mount' for pre-start file writes"
+  pct mount "$vm_id" >&2
+  _pct_mounted=1
+  _rootfs_mount="/var/lib/lxc/$vm_id/rootfs"
+  config_volume_path="${_rootfs_mount}/config"
+  secure_volume_path="${_rootfs_mount}/secure"
+  # Freshly mkfs.ext4'd LVs have root-owned mount roots; the container runs
+  # as mapped_uid/gid and would not be able to write to /config or /secure.
+  chown "${mapped_uid}:${mapped_gid}" "${config_volume_path}" "${secure_volume_path}" 2>/dev/null || true
+  chmod 0700 "${secure_volume_path}" 2>/dev/null || true
+fi
+
 log "Config volume: ${config_volume_path}"
 log "Secure volume: ${secure_volume_path}"
 
@@ -711,6 +731,11 @@ execute_script_from_github \
   log "Error: Failed to write LXC notes"
   exit 1
 }
+
+# Release pct-mounted volumes (if any) before starting the container.
+if [ "$_pct_mounted" = "1" ]; then
+  pct unmount "$vm_id" >&2 || log "Warning: pct unmount $vm_id failed"
+fi
 
 # 6) Ensure container is running
 step "Starting container"
