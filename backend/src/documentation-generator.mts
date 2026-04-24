@@ -543,7 +543,7 @@ export class DocumentationGenerator {
     }
 
     const templates: (string | ITemplateReference)[] = [];
-    const categories = ["image", "pre_start", "start", "post_start"];
+    const categories = ["image", "pre_start", "pre_start_finalize", "start", "post_start"];
 
     for (const category of categories) {
       const list = installation[category];

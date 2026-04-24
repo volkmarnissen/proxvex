@@ -629,28 +629,12 @@ if [ "$_vol_rc" -ne 0 ]; then
 fi
 
 # Resolve volume paths via managed volume lookup (sanitize hostname to match volume names)
+# conf-create-storage-volumes-for-lxc.sh has already run `vol_mount` for each
+# attached mp, so resolve_host_volume returns a real directory for both ZFS
+# (native mountpoint) and LVM/LVM-thin (mounted under /var/lib/pve-vol-mounts).
 _safe_host=$(echo "$hostname" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
-config_volume_path=$(resolve_host_volume "$_safe_host" "config" 2>/dev/null || true)
-secure_volume_path=$(resolve_host_volume "$_safe_host" "secure" 2>/dev/null || true)
-
-# For block-based storage (LVM / LVM-thin) the managed volumes are raw LVs
-# that only become filesystem-accessible once mounted. Use `pct mount` to
-# expose them as directories under /var/lib/lxc/<vmid>/rootfs/<mp> so the
-# storagecontext.json write below works the same way for both ZFS and LVM.
-# Unmounted again below, before `pct start`.
-_pct_mounted=0
-if [ ! -d "$config_volume_path" ] || [ ! -d "$secure_volume_path" ]; then
-  log "Volumes not directory-accessible — using 'pct mount' for pre-start file writes"
-  pct mount "$vm_id" >&2
-  _pct_mounted=1
-  _rootfs_mount="/var/lib/lxc/$vm_id/rootfs"
-  config_volume_path="${_rootfs_mount}/config"
-  secure_volume_path="${_rootfs_mount}/secure"
-  # Freshly mkfs.ext4'd LVs have root-owned mount roots; the container runs
-  # as mapped_uid/gid and would not be able to write to /config or /secure.
-  chown "${mapped_uid}:${mapped_gid}" "${config_volume_path}" "${secure_volume_path}" 2>/dev/null || true
-  chmod 0700 "${secure_volume_path}" 2>/dev/null || true
-fi
+config_volume_path=$(resolve_host_volume "$_safe_host" "config")
+secure_volume_path=$(resolve_host_volume "$_safe_host" "secure")
 
 log "Config volume: ${config_volume_path}"
 log "Secure volume: ${secure_volume_path}"
@@ -732,44 +716,20 @@ execute_script_from_github \
   exit 1
 }
 
-# Release pct-mounted volumes (if any) before starting the container.
-if [ "$_pct_mounted" = "1" ]; then
-  pct unmount "$vm_id" >&2 || log "Warning: pct unmount $vm_id failed"
-fi
+# Fix volume ownership from host side. Must happen while the volume is still
+# mounted on the host (before the unmount below), otherwise the chown/mkdir
+# hits a stale empty directory on LVM and the SSH keys end up in the wrong
+# place.
+log "Fixing volume ownership (mapped_uid=${mapped_uid}, mapped_gid=${mapped_gid})..."
+chown "${mapped_uid}:${mapped_gid}" "${config_volume_path}" 2>/dev/null || true
+chown "${mapped_uid}:${mapped_gid}" "${secure_volume_path}" 2>/dev/null || true
+mkdir -p "${secure_volume_path}/.ssh"
+chown "${mapped_uid}:${mapped_gid}" "${secure_volume_path}/.ssh"
+chmod 700 "${secure_volume_path}/.ssh"
 
-# 6) Ensure container is running
-step "Starting container"
-if ! pct status "${vm_id}" | grep -q "running"; then
-  pct start "${vm_id}" || {
-    log "Error: Failed to start container"
-    exit 1
-  }
-  # Wait for container to be ready
-  log "Waiting for container to be ready..."
-  sleep 3
-  for i in 1 2 3 4 5; do
-    if pct status "${vm_id}" | grep -q "running"; then
-      break
-    fi
-    sleep 2
-  done
-fi
-
-if ! pct status "${vm_id}" | grep -q "running"; then
-  log "Warning: Container may not be fully ready"
-else
-  log "Container is running"
-fi
-
-  # Fix volume ownership from host side
-  log "Fixing volume ownership (mapped_uid=${mapped_uid}, mapped_gid=${mapped_gid})..."
-  chown "${mapped_uid}:${mapped_gid}" "${config_volume_path}" 2>/dev/null || true
-  chown "${mapped_uid}:${mapped_gid}" "${secure_volume_path}" 2>/dev/null || true
-  mkdir -p "${secure_volume_path}/.ssh"
-  chown "${mapped_uid}:${mapped_gid}" "${secure_volume_path}/.ssh"
-  chmod 700 "${secure_volume_path}/.ssh"
-
-# 7) Setup SSH access — all from host side via secure_volume_path
+# Setup SSH access — all host-side writes into the secure volume, done BEFORE
+# `pct start` so the container sees the keys on first boot (and so the writes
+# land on the mounted volume, not on a post-unmount stale host directory).
 step "Setting up SSH access"
 ssh_dir="${secure_volume_path}/.ssh"
 
@@ -833,6 +793,55 @@ if [ -n "$host_pubkey" ]; then
 fi
 
 log "SSH access configured"
+
+# Release host-side volume mounts before starting the container.
+# Block-based storages (LVM/LVM-thin) had their filesystems mounted under
+# /var/lib/pve-vol-mounts/<volname> by vol_mount in pre_start so we could
+# write storagecontext.json + SSH keys; Proxmox wants them free before it
+# mounts them into the container. No-op for ZFS/dir where nothing was
+# vol_mount'ed.
+step "Releasing host-side volume mounts"
+pct config "${vm_id}" 2>/dev/null | awk '
+  /^mp[0-9]+:/ {
+    line = $0
+    sub(/^mp[0-9]+:[[:space:]]+/, "", line)
+    n = split(line, a, ",")
+    print a[1]
+  }
+' | while IFS= read -r _ip_volid; do
+  [ -z "$_ip_volid" ] && continue
+  _ip_vname="${_ip_volid#*:}"
+  _ip_mnt="/var/lib/pve-vol-mounts/${_ip_vname}"
+  if mountpoint -q "$_ip_mnt" 2>/dev/null; then
+    umount "$_ip_mnt" 2>/dev/null || umount -l "$_ip_mnt" 2>/dev/null || true
+    rmdir "$_ip_mnt" 2>/dev/null || true
+    log "Unmounted ${_ip_mnt}"
+  fi
+done
+
+# 6) Ensure container is running
+step "Starting container"
+if ! pct status "${vm_id}" | grep -q "running"; then
+  pct start "${vm_id}" || {
+    log "Error: Failed to start container"
+    exit 1
+  }
+  # Wait for container to be ready
+  log "Waiting for container to be ready..."
+  sleep 3
+  for i in 1 2 3 4 5; do
+    if pct status "${vm_id}" | grep -q "running"; then
+      break
+    fi
+    sleep 2
+  done
+fi
+
+if ! pct status "${vm_id}" | grep -q "running"; then
+  log "Warning: Container may not be fully ready"
+else
+  log "Container is running"
+fi
 
 # 8) Application startup context
 step "Application startup context ready"

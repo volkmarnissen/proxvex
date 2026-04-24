@@ -62,6 +62,9 @@
       "150-conf-create-storage-volumes-for-lxc.json",
       "185-host-resolve-dependency-hosts.json"
     ],
+    "pre_start_finalize": [
+      "100-conf-unmount-volumes.json"
+    ],
     "start": [
       "200-start-lxc.json"
     ],
@@ -96,6 +99,9 @@
       "121-conf-mount-zfs-pool-on-host.json",
       "150-conf-create-storage-volumes-for-lxc.json",
       "185-host-resolve-dependency-hosts.json"
+    ],
+    "pre_start_finalize": [
+      "100-conf-unmount-volumes.json"
     ],
     "start": [
       "200-start-lxc.json"

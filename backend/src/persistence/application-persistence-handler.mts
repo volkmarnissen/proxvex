@@ -769,7 +769,7 @@ export class ApplicationPersistenceHandler {
     opts: IReadApplicationOptions,
   ): void {
     // Installation uses category-based format: { image, pre_start, start, post_start }
-    const installationCategories = ["image", "create_ct", "pre_start", "start", "post_start", "replace_ct", "check"];
+    const installationCategories = ["image", "create_ct", "pre_start", "pre_start_finalize", "start", "post_start", "replace_ct", "check"];
     const installation = (appData as any).installation;
     if (installation && typeof installation === "object") {
       let taskEntry = opts.taskTemplates.find((t) => t.task === "installation");
@@ -944,6 +944,7 @@ export class ApplicationPersistenceHandler {
     "image",
     "create_ct",
     "pre_start",
+    "pre_start_finalize",
     "start",
     "post_start",
     "replace_ct",

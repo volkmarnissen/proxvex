@@ -15,6 +15,7 @@
         "image": { "$ref": "templatelist" },
         "create_ct": { "$ref": "templatelist" },
         "pre_start": { "$ref": "templatelist" },
+        "pre_start_finalize": { "$ref": "templatelist" },
         "start": { "$ref": "templatelist" },
         "post_start": { "$ref": "templatelist" },
         "replace_ct": { "$ref": "templatelist" },

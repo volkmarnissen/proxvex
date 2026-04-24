@@ -30,6 +30,11 @@ def resolve_host_volume(hostname: str, volume_key: str) -> str:
     storage = os.environ.get("VOLUME_STORAGE", "local-zfs")
     pvesm = _find_pvesm()
 
+    # Stable mount root used by vol_mount (vol-common.sh) for block-based
+    # storages that don't naturally appear as a directory via pvesm path.
+    # Keep in sync with VOL_MOUNT_ROOT in vol-common.sh.
+    vol_mount_root = "/var/lib/pve-vol-mounts"
+
     def _pvesm_find(suffix: str):
         try:
             result = subprocess.run(
@@ -68,6 +73,12 @@ def resolve_host_volume(hostname: str, volume_key: str) -> str:
             volid = parts[0]
             if volid.endswith(suffix):
                 match_count += 1
+                # Prefer a vol_mount'ed path under VOL_MOUNT_ROOT if it exists
+                # (LVM/LVM-thin case — pvesm path would return a block device).
+                volname = volid.split(":", 1)[1] if ":" in volid else volid
+                mounted_path = os.path.join(vol_mount_root, volname)
+                if os.path.isdir(mounted_path) and os.path.ismount(mounted_path):
+                    return mounted_path
                 try:
                     path_result = subprocess.run(
                         [pvesm, "path", volid],

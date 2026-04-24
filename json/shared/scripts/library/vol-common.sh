@@ -157,6 +157,95 @@ vol_resolve_path() {
   return 1
 }
 
+# Stable host-side mount root for block-device-backed managed volumes.
+# Kept outside /var/lib/lxc so it never collides with pct mount targets.
+VOL_MOUNT_ROOT="/var/lib/pve-vol-mounts"
+
+# Expose a volume's filesystem at a stable host-side directory.
+#
+# For directory-backed storages (zfspool, dir, nfs, cifs) this is a no-op
+# that just returns the pvesm path — the volume is already accessible as
+# a directory.
+#
+# For block-based storages (lvm, lvmthin) the raw LV is mounted at
+# /var/lib/pve-vol-mounts/<volname>. Idempotent: re-mounting the same
+# volume returns the existing mountpoint.
+#
+# Args: $1=volid, $2=volname, $3=storage_type, $4=storage_name
+# Prints host-side directory path on success, returns 1 on failure.
+vol_mount() {
+  _vmnt_volid="$1"; _vmnt_volname="$2"; _vmnt_type="$3"; _vmnt_stor="$4"
+
+  case "$_vmnt_type" in
+    zfspool|dir|nfs|cifs)
+      _vmnt_path=$(vol_resolve_path "$_vmnt_volid" "$_vmnt_volname" "$_vmnt_type" "$_vmnt_stor" || true)
+      if [ -n "$_vmnt_path" ] && [ -d "$_vmnt_path" ]; then
+        echo "$_vmnt_path"
+        return 0
+      fi
+      echo "vol_mount: directory-backed volume $_vmnt_volid resolved to non-directory '$_vmnt_path'" >&2
+      return 1
+      ;;
+    lvm|lvmthin)
+      _vmnt_dev=$(pvesm path "$_vmnt_volid" 2>/dev/null || true)
+      if [ -z "$_vmnt_dev" ] || [ ! -b "$_vmnt_dev" ]; then
+        echo "vol_mount: pvesm path for $_vmnt_volid did not return a block device (got '$_vmnt_dev')" >&2
+        return 1
+      fi
+      _vmnt_mp="${VOL_MOUNT_ROOT}/${_vmnt_volname}"
+      if mountpoint -q "$_vmnt_mp" 2>/dev/null; then
+        echo "$_vmnt_mp"
+        return 0
+      fi
+      mkdir -p "$_vmnt_mp"
+      if ! mount "$_vmnt_dev" "$_vmnt_mp" 2>/dev/null; then
+        echo "vol_mount: mount $_vmnt_dev on $_vmnt_mp failed" >&2
+        rmdir "$_vmnt_mp" 2>/dev/null || true
+        return 1
+      fi
+      echo "$_vmnt_mp"
+      return 0
+      ;;
+  esac
+
+  # Unknown storage type — best-effort: return whatever pvesm reports and
+  # let the caller decide.
+  _vmnt_path=$(vol_resolve_path "$_vmnt_volid" "$_vmnt_volname" "$_vmnt_type" "$_vmnt_stor" || true)
+  if [ -n "$_vmnt_path" ]; then
+    echo "$_vmnt_path"
+    return 0
+  fi
+  return 1
+}
+
+# Release all vol_mount'ed mounts attached to the given container.
+# Walks the container's mpN entries via `pct config`, derives each volume's
+# expected mountpoint under $VOL_MOUNT_ROOT, and unmounts it.
+# Idempotent — safe to call when no mounts exist.
+# Args: $1=vmid
+vol_unmount_all() {
+  _vumnt_vmid="$1"
+  [ -z "$_vumnt_vmid" ] && return 0
+
+  pct config "$_vumnt_vmid" 2>/dev/null | awk '
+    /^mp[0-9]+:/ {
+      line = $0
+      sub(/^mp[0-9]+:[[:space:]]+/, "", line)
+      n = split(line, a, ",")
+      print a[1]
+    }
+  ' | while IFS= read -r _vumnt_volid; do
+    [ -z "$_vumnt_volid" ] && continue
+    _vumnt_volname="${_vumnt_volid#*:}"
+    _vumnt_mp="${VOL_MOUNT_ROOT}/${_vumnt_volname}"
+    if mountpoint -q "$_vumnt_mp" 2>/dev/null; then
+      umount "$_vumnt_mp" 2>/dev/null || umount -l "$_vumnt_mp" 2>/dev/null || true
+      rmdir "$_vumnt_mp" 2>/dev/null || true
+    fi
+  done
+  return 0
+}
+
 # Find an existing volume by name suffix.
 # Preference order: previouse_vm_id's volume -> any existing volume with suffix.
 # Args: $1=storage, $2=suffix, $3=storage_type, $4=prev_vmid(optional)

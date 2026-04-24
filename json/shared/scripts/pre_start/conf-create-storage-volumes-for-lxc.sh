@@ -280,10 +280,14 @@ while IFS= read -r line <&3; do
     fi
   fi
 
-  # Resolve host-side path for permissions
-  VOLPATH=$(vol_resolve_path "$VOLID" "${VOLID#*:}" "$STORAGE_TYPE" "$VOLUME_STORAGE" || true)
-  if [ -z "$VOLPATH" ]; then
-    fail "Failed to resolve path for volume $VOLID"
+  # Expose the volume's filesystem at a directory path so chmod/chown below
+  # actually act on the filesystem root (on LVM, pvesm path returns a block
+  # device and chmod/chown would be silent no-ops). vol_mount handles the
+  # storage-type differences; vol_unmount_all in pre_start_finalize releases
+  # the mount again before `pct start`.
+  VOLPATH=$(vol_mount "$VOLID" "${VOLID#*:}" "$STORAGE_TYPE" "$VOLUME_STORAGE" || true)
+  if [ -z "$VOLPATH" ] || [ ! -d "$VOLPATH" ]; then
+    fail "Failed to mount volume $VOLID (got '$VOLPATH')"
   fi
 
   # Set permissions and ownership on the volume

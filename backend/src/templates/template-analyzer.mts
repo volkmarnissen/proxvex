@@ -284,7 +284,7 @@ export class TemplateAnalyzer {
     }
 
     const templates: { ref: string | ITemplateReference; category: string }[] = [];
-    const categories = ["image", "pre_start", "start", "post_start"];
+    const categories = ["image", "pre_start", "pre_start_finalize", "start", "post_start"];
 
     for (const category of categories) {
       const list = installation[category];
