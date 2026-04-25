@@ -274,11 +274,15 @@ nested_ssh "
   cfg=/etc/dnsmasq.d/proxvex-deployer.conf
   {
     # Sibling LXCs use 'http://proxvex:3080' as deployer URL.
-    echo 'address=/proxvex/$DEPLOYER_IP'
+    # Use host-record (not address=) so the entry beats DHCP-derived
+    # hostname leases from previous test containers — `address=/proxvex/…`
+    # gets shadowed by stale DHCP leases for any container that briefly
+    # ran with hostname 'proxvex'.
+    echo 'host-record=proxvex,$DEPLOYER_IP'
     # 'docker-registry-mirror' is what registry-mirror-common.sh's mirror_detect
     # looks for. Point it at 10.0.0.1 (the dockerhub-mirror) so the trust-CA
     # post_start script enters its mirror branch and configures Docker.
-    echo 'address=/docker-registry-mirror/10.0.0.1'
+    echo 'host-record=docker-registry-mirror,10.0.0.1'
   } > \$cfg
   # Full restart — SIGHUP/reload doesn't always pick up new files under
   # /etc/dnsmasq.d/ on this Proxmox install.

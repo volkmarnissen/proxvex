@@ -101,19 +101,39 @@ mirror_trust_insecure() {
     # Append to existing array — not needed for fresh installs
     echo "Warning: insecure-registries exists but missing mirror entry" >&2
   else
-    # Create new entry
-    printf '{\n  "insecure-registries": ["registry-1.docker.io", "index.docker.io", "ghcr.io"]\n}\n' > "$_daemon_json"
+    # Create new entry. registry-mirrors is also set to the HTTP endpoint:
+    # Docker only uses the insecure HTTP path when there's an explicit
+    # registry-mirrors entry — without it the daemon still attempts HTTPS
+    # against registry-1.docker.io (insecure-registries on its own permits
+    # HTTP but doesn't make Docker prefer it).
+    printf '{\n  "insecure-registries": ["registry-1.docker.io", "index.docker.io", "ghcr.io"],\n  "registry-mirrors": ["http://registry-1.docker.io"]\n}\n' > "$_daemon_json"
     _needs_restart=true
   fi
 
   echo "Set insecure-registries for registry mirror" >&2
 
-  # Restart Docker if running
+  # Restart Docker if running. After restart, wait for the daemon to be
+  # ready AND for the new insecure-registries config to take effect (rc-service
+  # returns before the daemon has finished initializing — the next test
+  # command can otherwise hit the daemon during its old-config tail and
+  # docker errors with `server gave HTTP response to HTTPS client`).
   if [ "$_needs_restart" = true ]; then
     if command -v rc-service > /dev/null 2>&1; then
       rc-service docker restart >&2 2>&1 || true
     elif command -v systemctl > /dev/null 2>&1; then
       systemctl restart docker >&2 2>&1 || true
     fi
+    # Poll until docker info reports our insecure-registries list — that
+    # confirms the daemon picked up the new daemon.json.
+    _i=0
+    while [ "$_i" -lt 30 ]; do
+      if docker info 2>/dev/null | grep -q "registry-1.docker.io"; then
+        echo "Docker daemon picked up insecure-registries config" >&2
+        return
+      fi
+      sleep 1
+      _i=$(( _i + 1 ))
+    done
+    echo "Warning: docker did not report insecure-registries after 30s" >&2
   fi
 }

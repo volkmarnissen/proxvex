@@ -430,8 +430,39 @@ vol_copy() {
       echo "${_vol_stor}:${_vol_new_name}"
       return 0
       ;;
+    lvm|lvmthin)
+      # LVM-thin (and LVM): use `pvesm alloc` to create a new LV of the same
+      # size, then dd the source's contents into it. The source LV may be
+      # mounted by a running container (typical upgrade path: deployer copies
+      # itself before replacing). dd of a live block device is not perfectly
+      # consistent, but it matches what `pct clone` does internally and is
+      # adequate for files written-once at install time (storagecontext.json,
+      # admin-client.pat, etc).
+      _vol_vg=$(vol_get_lvm_vgname "$_vol_stor")
+      [ -z "$_vol_vg" ] && { echo "vol_copy: cannot find vgname for $_vol_stor" >&2; return 1; }
+      _vol_src_dev="/dev/${_vol_vg}/${_vol_src_name}"
+      [ -b "$_vol_src_dev" ] || { echo "vol_copy: source $_vol_src_dev is not a block device" >&2; return 1; }
+      _vol_size_bytes=$(blockdev --getsize64 "$_vol_src_dev" 2>/dev/null)
+      [ -z "$_vol_size_bytes" ] && { echo "vol_copy: cannot determine size of $_vol_src_dev" >&2; return 1; }
+      # pvesm alloc size: bare integer interpreted as kibibytes (regex \d+[MG]?).
+      _vol_size_k=$(( (_vol_size_bytes + 1023) / 1024 ))
+      # Strip vmid from new name to derive caller's vmid (vm-VMID-suffix).
+      _vol_caller_vmid=$(echo "$_vol_new_name" | sed -nE 's/^vm-([0-9]+)-.*/\1/p')
+      [ -z "$_vol_caller_vmid" ] && _vol_caller_vmid=0
+      _vol_new_volid=$(vol_alloc "$_vol_stor" "$_vol_caller_vmid" "$_vol_new_name" "$_vol_size_k") || {
+        echo "vol_copy: pvesm alloc failed for $_vol_new_name" >&2
+        return 1
+      }
+      _vol_dst_dev="/dev/${_vol_vg}/${_vol_new_name}"
+      if ! dd if="$_vol_src_dev" of="$_vol_dst_dev" bs=1M conv=fsync status=none 2>&1; then
+        echo "vol_copy: dd $_vol_src_dev -> $_vol_dst_dev failed" >&2
+        return 1
+      fi
+      echo "$_vol_new_volid"
+      return 0
+      ;;
     *)
-      echo "vol_copy: storage type '$_vol_type' not yet supported (only zfspool)" >&2
+      echo "vol_copy: storage type '$_vol_type' not yet supported (only zfspool, lvm, lvmthin)" >&2
       return 1
       ;;
   esac
