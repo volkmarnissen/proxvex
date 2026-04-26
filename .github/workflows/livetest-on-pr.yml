@@ -6,7 +6,7 @@ name: Livetest (non-blocking)
 #
 # Triggers:
 #   - pull_request: on changes to code paths that could affect runtime behaviour
-#   - workflow_dispatch: manual run for a specific branch + optional filter
+#   - workflow_dispatch: manual run for a specific branch 
 
 on:
   pull_request:
@@ -19,12 +19,6 @@ on:
       - scripts/**
       - docker/**
   workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Branch to run livetest against'
-        type: string
-        required: false
-        default: main
       test_filter:
         description: 'Test filter (e.g. postgres/default, zitadel, --all)'
         type: string
@@ -71,7 +65,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
