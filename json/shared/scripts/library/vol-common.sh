@@ -377,7 +377,10 @@ vol_rename() {
     lvmthin|lvm)
       _vol_vgname=$(vol_get_lvm_vgname "$_vol_stor")
       [ -z "$_vol_vgname" ] && return 1
-      lvrename "${_vol_vgname}" "${_vol_old_name}" "${_vol_new_name}" 2>/dev/null || return 1
+      # lvrename echoes a "Renamed ..." success line to stdout — silence both
+      # stdout and stderr so only our `echo "<volid>"` ends up on stdout. The
+      # caller parses our output as a single volid.
+      lvrename "${_vol_vgname}" "${_vol_old_name}" "${_vol_new_name}" >/dev/null 2>&1 || return 1
       echo "${_vol_stor}:${_vol_new_name}"
       ;;
     dir)
@@ -415,9 +418,21 @@ vol_copy() {
       [ -z "$_vol_pool" ] && return 1
       _vol_src_ds="${_vol_pool}/${_vol_src_name}"
       _vol_dst_ds="${_vol_pool}/${_vol_new_name}"
+      # Orphan handling: if a previous failed reconfigure left the destination
+      # subvol behind, drop it before re-creating — but only when no running
+      # container claims it.
       if zfs list -H -o name "$_vol_dst_ds" >/dev/null 2>&1; then
-        echo "vol_copy: destination $_vol_dst_ds already exists" >&2
-        return 1
+        if pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' \
+            | xargs -I{} pct config {} 2>/dev/null \
+            | grep -qF "${_vol_stor}:${_vol_new_name}"; then
+          echo "vol_copy: destination $_vol_dst_ds is in use by a running CT — refusing to overwrite" >&2
+          return 1
+        fi
+        echo "vol_copy: removing orphan destination $_vol_dst_ds (no live container holds it)" >&2
+        zfs destroy -r "$_vol_dst_ds" 2>/dev/null || {
+          echo "vol_copy: zfs destroy failed for orphan $_vol_dst_ds" >&2
+          return 1
+        }
       fi
       _vol_snap_tag="upgrade-copy-$$"
       _vol_snap="${_vol_src_ds}@${_vol_snap_tag}"
@@ -443,11 +458,23 @@ vol_copy() {
       # for "duplicate this volume so the new container can mutate it".
       _vol_vg=$(vol_get_lvm_vgname "$_vol_stor")
       [ -z "$_vol_vg" ] && { echo "vol_copy: cannot find vgname for $_vol_stor" >&2; return 1; }
-      # Reject if destination already exists — caller is expected to handle
-      # the "already there" case (e.g. via vol_get_existing) before us.
+      # If the destination LV already exists, it's an orphan from a previous
+      # failed reconfigure (the VM never came up to claim it, but the LV was
+      # already allocated). Only remove it if no running container is using
+      # it — otherwise we'd corrupt a live container's storage.
       if lvs --noheadings "$_vol_vg/$_vol_new_name" >/dev/null 2>&1; then
-        echo "vol_copy: destination $_vol_vg/$_vol_new_name already exists" >&2
-        return 1
+        if pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' \
+            | xargs -I{} pct config {} 2>/dev/null \
+            | grep -qF "${_vol_stor}:${_vol_new_name}"; then
+          echo "vol_copy: destination $_vol_vg/$_vol_new_name is in use by a running CT — refusing to overwrite" >&2
+          return 1
+        fi
+        echo "vol_copy: removing orphan destination $_vol_vg/$_vol_new_name (no live container holds it)" >&2
+        lvchange -an "$_vol_vg/$_vol_new_name" >&2 2>&1 || true
+        if ! lvremove -f "$_vol_vg/$_vol_new_name" >&2 2>&1; then
+          echo "vol_copy: lvremove failed for orphan $_vol_vg/$_vol_new_name" >&2
+          return 1
+        fi
       fi
       if ! lvcreate --type thin -s -n "$_vol_new_name" "$_vol_vg/$_vol_src_name" >&2; then
         echo "vol_copy: lvcreate --snapshot $_vol_vg/$_vol_src_name -> $_vol_new_name failed" >&2

@@ -50,6 +50,10 @@
     {
       "id": "username",
       "value": "root"
+    },
+    {
+      "id": "disk_size",
+      "value": "1.5"
     }
   ],
   "installation": {
