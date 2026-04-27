@@ -39,6 +39,11 @@ docker/proxvex.tgz
 # Environment files with credentials (keep .env.template)
 **/.env
 !**/.env.template
+
+# E2E test config — contains infrastructure details (host, subnets, IPs).
+# Committed as config.json.example; devs copy to config.json locally;
+# CI workflows materialize it from the E2E_CONFIG GitHub secret.
+e2e/config.json
 # Personal Access Tokens
 **/*.pat
 **/__pycache__/*

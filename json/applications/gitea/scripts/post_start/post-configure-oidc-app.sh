@@ -17,6 +17,26 @@ echo "  Issuer URL:    ${OIDC_ISSUER_URL}" >&2
 echo "  Discovery URL: ${DISCOVERY_URL}" >&2
 echo "  Client ID:     ${OIDC_CLIENT_ID}" >&2
 
+# Wait for gitea's DB migration (the web server runs it on first start). The
+# CLI commands below — `admin user create`, `admin auth add-oauth` — query
+# tables (`user`, `login_source`) that don't exist until migration finishes,
+# so polling `admin user list` until it stops failing with "relation does not
+# exist" is the cheapest way to gate. Gives up after ~60 s.
+echo "Waiting for Gitea DB migration..." >&2
+i=0
+while [ $i -lt 60 ]; do
+  if gitea admin user list >/dev/null 2>&1; then
+    echo "Gitea DB ready after ${i}s" >&2
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+if [ $i -ge 60 ]; then
+  echo "ERROR: Gitea DB not ready after 60s" >&2
+  exit 1
+fi
+
 # Create admin user if not exists
 EXISTING_USER=$(gitea admin user list 2>/dev/null | grep -w "${GITEA_ADMIN_USER}" || true)
 if [ -z "$EXISTING_USER" ]; then

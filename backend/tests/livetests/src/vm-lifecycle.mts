@@ -220,8 +220,24 @@ export function prepareVms(
       logOk(`VM ${p.vmId} (${p.scenario.id}) running — ${task} in place`);
     } else if (!p.isDependency || status.includes("status:")) {
       logInfo(`Destroying VM ${p.vmId} (${p.scenario.id})...`);
+      // Release any leftover host-side LV mounts first — vol_mount
+      // (used on LVM/LVM-thin storage) leaves /var/lib/pve-vol-mounts/<volname>
+      // mounted on failure paths, and `pct destroy` then fails with
+      // "Logical volume contains a filesystem in use". Parse mp volids from
+      // the container config before we shut it down.
       nestedSsh(config.pveHost, config.portPveSsh,
-        `pct stop ${p.vmId} 2>/dev/null || true; pct destroy ${p.vmId} --force --purge 2>/dev/null || true`,
+        `pct config ${p.vmId} 2>/dev/null | awk '/^mp[0-9]+:/ {sub(/^mp[0-9]+:[[:space:]]+/, ""); n=split($0,a,","); print a[1]}' | while IFS= read -r vid; do ` +
+        `  [ -z "$vid" ] && continue; ` +
+        `  mnt="/var/lib/pve-vol-mounts/\${vid#*:}"; ` +
+        `  mountpoint -q "$mnt" 2>/dev/null && { umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null; rmdir "$mnt" 2>/dev/null; }; ` +
+        `done; ` +
+        `pct stop ${p.vmId} 2>/dev/null || true; pct destroy ${p.vmId} --force --purge 2>/dev/null || true; ` +
+        // Sweep orphan LVs from a crashed pct clone / pct destroy. When a
+        // reconfigure aborts mid-way, the cloned-and-renamed LV (e.g.
+        // vm-224-proxvex-config) survives in LVM but is no longer registered
+        // with any container, so the next reconfigure for the same VMID
+        // hits "Logical Volume already exists". Match the VMID prefix.
+        `command -v lvs >/dev/null 2>&1 && lvs --noheadings -o vg_name,lv_name 2>/dev/null | awk -v vmid=${p.vmId} '$2 ~ "^vm-"vmid"-" {print $1"/"$2}' | xargs -r -n1 lvremove -f >/dev/null 2>&1 || true`,
         30000);
     }
 

@@ -80,6 +80,28 @@ vol_alloc() {
     _vol_vid=$(vol_extract_volid "$_vol_raw")
     if [ -n "$_vol_vid" ]; then
       rm -f "$_vol_errfile"
+      # LVM/LVM-thin allocations return an unformatted raw block device.
+      # `pct start` and `pct mount` both require a filesystem on mp volumes
+      # (pct only formats the rootfs itself, not extra mp volumes). Match
+      # the filesystem pct uses for rootfs LVs: ext4.
+      case "$(vol_get_storage_type "$_vol_storage")" in
+        lvm|lvmthin)
+          _vol_dev=$(pvesm path "$_vol_vid" 2>/dev/null || true)
+          if [ -n "$_vol_dev" ] && [ -b "$_vol_dev" ] \
+             && ! blkid "$_vol_dev" >/dev/null 2>&1; then
+            # `lazy_itable_init=1,lazy_journal_init=1`: defer inode/journal
+            # init until first access. Without this, mkfs.ext4 on a 4 GiB LV
+            # in a nested VM costs 10-30s eagerly initializing the full inode
+            # table — and most tests have 2-3 volumes each, multiplying the
+            # cost. With lazy init mkfs returns in ms; the kernel finishes
+            # init opportunistically once the FS is mounted.
+            if ! mkfs.ext4 -q -F -E lazy_itable_init=1,lazy_journal_init=1 "$_vol_dev" >&2; then
+              echo "vol_alloc: mkfs.ext4 on $_vol_dev failed" >&2
+              return 1
+            fi
+          fi
+          ;;
+      esac
       echo "$_vol_vid"
       return 0
     fi
@@ -139,6 +161,95 @@ vol_resolve_path() {
   fi
 
   return 1
+}
+
+# Stable host-side mount root for block-device-backed managed volumes.
+# Kept outside /var/lib/lxc so it never collides with pct mount targets.
+VOL_MOUNT_ROOT="/var/lib/pve-vol-mounts"
+
+# Expose a volume's filesystem at a stable host-side directory.
+#
+# For directory-backed storages (zfspool, dir, nfs, cifs) this is a no-op
+# that just returns the pvesm path — the volume is already accessible as
+# a directory.
+#
+# For block-based storages (lvm, lvmthin) the raw LV is mounted at
+# /var/lib/pve-vol-mounts/<volname>. Idempotent: re-mounting the same
+# volume returns the existing mountpoint.
+#
+# Args: $1=volid, $2=volname, $3=storage_type, $4=storage_name
+# Prints host-side directory path on success, returns 1 on failure.
+vol_mount() {
+  _vmnt_volid="$1"; _vmnt_volname="$2"; _vmnt_type="$3"; _vmnt_stor="$4"
+
+  case "$_vmnt_type" in
+    zfspool|dir|nfs|cifs)
+      _vmnt_path=$(vol_resolve_path "$_vmnt_volid" "$_vmnt_volname" "$_vmnt_type" "$_vmnt_stor" || true)
+      if [ -n "$_vmnt_path" ] && [ -d "$_vmnt_path" ]; then
+        echo "$_vmnt_path"
+        return 0
+      fi
+      echo "vol_mount: directory-backed volume $_vmnt_volid resolved to non-directory '$_vmnt_path'" >&2
+      return 1
+      ;;
+    lvm|lvmthin)
+      _vmnt_dev=$(pvesm path "$_vmnt_volid" 2>/dev/null || true)
+      if [ -z "$_vmnt_dev" ] || [ ! -b "$_vmnt_dev" ]; then
+        echo "vol_mount: pvesm path for $_vmnt_volid did not return a block device (got '$_vmnt_dev')" >&2
+        return 1
+      fi
+      _vmnt_mp="${VOL_MOUNT_ROOT}/${_vmnt_volname}"
+      if mountpoint -q "$_vmnt_mp" 2>/dev/null; then
+        echo "$_vmnt_mp"
+        return 0
+      fi
+      mkdir -p "$_vmnt_mp"
+      if ! mount "$_vmnt_dev" "$_vmnt_mp" 2>/dev/null; then
+        echo "vol_mount: mount $_vmnt_dev on $_vmnt_mp failed" >&2
+        rmdir "$_vmnt_mp" 2>/dev/null || true
+        return 1
+      fi
+      echo "$_vmnt_mp"
+      return 0
+      ;;
+  esac
+
+  # Unknown storage type — best-effort: return whatever pvesm reports and
+  # let the caller decide.
+  _vmnt_path=$(vol_resolve_path "$_vmnt_volid" "$_vmnt_volname" "$_vmnt_type" "$_vmnt_stor" || true)
+  if [ -n "$_vmnt_path" ]; then
+    echo "$_vmnt_path"
+    return 0
+  fi
+  return 1
+}
+
+# Release all vol_mount'ed mounts attached to the given container.
+# Walks the container's mpN entries via `pct config`, derives each volume's
+# expected mountpoint under $VOL_MOUNT_ROOT, and unmounts it.
+# Idempotent — safe to call when no mounts exist.
+# Args: $1=vmid
+vol_unmount_all() {
+  _vumnt_vmid="$1"
+  [ -z "$_vumnt_vmid" ] && return 0
+
+  pct config "$_vumnt_vmid" 2>/dev/null | awk '
+    /^mp[0-9]+:/ {
+      line = $0
+      sub(/^mp[0-9]+:[[:space:]]+/, "", line)
+      n = split(line, a, ",")
+      print a[1]
+    }
+  ' | while IFS= read -r _vumnt_volid; do
+    [ -z "$_vumnt_volid" ] && continue
+    _vumnt_volname="${_vumnt_volid#*:}"
+    _vumnt_mp="${VOL_MOUNT_ROOT}/${_vumnt_volname}"
+    if mountpoint -q "$_vumnt_mp" 2>/dev/null; then
+      umount "$_vumnt_mp" 2>/dev/null || umount -l "$_vumnt_mp" 2>/dev/null || true
+      rmdir "$_vumnt_mp" 2>/dev/null || true
+    fi
+  done
+  return 0
 }
 
 # Find an existing volume by name suffix.
@@ -266,7 +377,10 @@ vol_rename() {
     lvmthin|lvm)
       _vol_vgname=$(vol_get_lvm_vgname "$_vol_stor")
       [ -z "$_vol_vgname" ] && return 1
-      lvrename "${_vol_vgname}" "${_vol_old_name}" "${_vol_new_name}" 2>/dev/null || return 1
+      # lvrename echoes a "Renamed ..." success line to stdout — silence both
+      # stdout and stderr so only our `echo "<volid>"` ends up on stdout. The
+      # caller parses our output as a single volid.
+      lvrename "${_vol_vgname}" "${_vol_old_name}" "${_vol_new_name}" >/dev/null 2>&1 || return 1
       echo "${_vol_stor}:${_vol_new_name}"
       ;;
     dir)
@@ -304,9 +418,21 @@ vol_copy() {
       [ -z "$_vol_pool" ] && return 1
       _vol_src_ds="${_vol_pool}/${_vol_src_name}"
       _vol_dst_ds="${_vol_pool}/${_vol_new_name}"
+      # Orphan handling: if a previous failed reconfigure left the destination
+      # subvol behind, drop it before re-creating — but only when no running
+      # container claims it.
       if zfs list -H -o name "$_vol_dst_ds" >/dev/null 2>&1; then
-        echo "vol_copy: destination $_vol_dst_ds already exists" >&2
-        return 1
+        if pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' \
+            | xargs -I{} pct config {} 2>/dev/null \
+            | grep -qF "${_vol_stor}:${_vol_new_name}"; then
+          echo "vol_copy: destination $_vol_dst_ds is in use by a running CT — refusing to overwrite" >&2
+          return 1
+        fi
+        echo "vol_copy: removing orphan destination $_vol_dst_ds (no live container holds it)" >&2
+        zfs destroy -r "$_vol_dst_ds" 2>/dev/null || {
+          echo "vol_copy: zfs destroy failed for orphan $_vol_dst_ds" >&2
+          return 1
+        }
       fi
       _vol_snap_tag="upgrade-copy-$$"
       _vol_snap="${_vol_src_ds}@${_vol_snap_tag}"
@@ -325,8 +451,71 @@ vol_copy() {
       echo "${_vol_stor}:${_vol_new_name}"
       return 0
       ;;
+    lvmthin)
+      # LVM-thin: `lvcreate --snapshot` creates an instant CoW clone in the
+      # same thin pool — orders of magnitude faster than dd. The snapshot is
+      # independent (writes don't propagate to source), exactly what we need
+      # for "duplicate this volume so the new container can mutate it".
+      _vol_vg=$(vol_get_lvm_vgname "$_vol_stor")
+      [ -z "$_vol_vg" ] && { echo "vol_copy: cannot find vgname for $_vol_stor" >&2; return 1; }
+      # If the destination LV already exists, it's an orphan from a previous
+      # failed reconfigure (the VM never came up to claim it, but the LV was
+      # already allocated). Only remove it if no running container is using
+      # it — otherwise we'd corrupt a live container's storage.
+      if lvs --noheadings "$_vol_vg/$_vol_new_name" >/dev/null 2>&1; then
+        if pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' \
+            | xargs -I{} pct config {} 2>/dev/null \
+            | grep -qF "${_vol_stor}:${_vol_new_name}"; then
+          echo "vol_copy: destination $_vol_vg/$_vol_new_name is in use by a running CT — refusing to overwrite" >&2
+          return 1
+        fi
+        echo "vol_copy: removing orphan destination $_vol_vg/$_vol_new_name (no live container holds it)" >&2
+        lvchange -an "$_vol_vg/$_vol_new_name" >&2 2>&1 || true
+        if ! lvremove -f "$_vol_vg/$_vol_new_name" >&2 2>&1; then
+          echo "vol_copy: lvremove failed for orphan $_vol_vg/$_vol_new_name" >&2
+          return 1
+        fi
+      fi
+      if ! lvcreate --type thin -s -n "$_vol_new_name" "$_vol_vg/$_vol_src_name" >&2; then
+        echo "vol_copy: lvcreate --snapshot $_vol_vg/$_vol_src_name -> $_vol_new_name failed" >&2
+        return 1
+      fi
+      # Activate the new thin LV (snapshots are inactive by default).
+      lvchange -ay "$_vol_vg/$_vol_new_name" >&2 2>&1 || true
+      # Drop the "skip activation" flag PVE adds to fresh thin volumes so the
+      # LV is actually accessible.
+      lvchange -kn -ay "$_vol_vg/$_vol_new_name" >&2 2>&1 || true
+      echo "${_vol_stor}:${_vol_new_name}"
+      return 0
+      ;;
+    lvm)
+      # Thick LVM: no thin snapshots — fall back to alloc + dd. Source may
+      # still be mounted by a running container; dd of a live block device
+      # is not perfectly consistent but matches what `pct clone` does
+      # internally and is adequate for write-once install artefacts.
+      _vol_vg=$(vol_get_lvm_vgname "$_vol_stor")
+      [ -z "$_vol_vg" ] && { echo "vol_copy: cannot find vgname for $_vol_stor" >&2; return 1; }
+      _vol_src_dev="/dev/${_vol_vg}/${_vol_src_name}"
+      [ -b "$_vol_src_dev" ] || { echo "vol_copy: source $_vol_src_dev is not a block device" >&2; return 1; }
+      _vol_size_bytes=$(blockdev --getsize64 "$_vol_src_dev" 2>/dev/null)
+      [ -z "$_vol_size_bytes" ] && { echo "vol_copy: cannot determine size of $_vol_src_dev" >&2; return 1; }
+      _vol_size_k=$(( (_vol_size_bytes + 1023) / 1024 ))
+      _vol_caller_vmid=$(echo "$_vol_new_name" | sed -nE 's/^vm-([0-9]+)-.*/\1/p')
+      [ -z "$_vol_caller_vmid" ] && _vol_caller_vmid=0
+      _vol_new_volid=$(vol_alloc "$_vol_stor" "$_vol_caller_vmid" "$_vol_new_name" "$_vol_size_k") || {
+        echo "vol_copy: pvesm alloc failed for $_vol_new_name" >&2
+        return 1
+      }
+      _vol_dst_dev="/dev/${_vol_vg}/${_vol_new_name}"
+      if ! dd if="$_vol_src_dev" of="$_vol_dst_dev" bs=1M conv=fsync status=none 2>&1; then
+        echo "vol_copy: dd $_vol_src_dev -> $_vol_dst_dev failed" >&2
+        return 1
+      fi
+      echo "$_vol_new_volid"
+      return 0
+      ;;
     *)
-      echo "vol_copy: storage type '$_vol_type' not yet supported (only zfspool)" >&2
+      echo "vol_copy: storage type '$_vol_type' not yet supported (only zfspool, lvm, lvmthin)" >&2
       return 1
       ;;
   esac

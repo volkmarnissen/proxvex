@@ -73,10 +73,16 @@ if [ "$TARGET_VMID" = "$SOURCE_VMID" ]; then
   fail "Target VMID ($TARGET_VMID) must differ from source VMID ($SOURCE_VMID)"
 fi
 
-# Detect rootfs storage
+# Detect rootfs storage. Prefer the source container's own rootfs, fall back
+# to whatever rootdir-content storage is actually configured on this host
+# (LVM-thin on github-action CI, dir on minimal hosts, etc.). The previous
+# fallback to a hardcoded `local-zfs` broke any non-ZFS deployment.
 ROOTFS_STORAGE=$(pct config "$SOURCE_VMID" | grep "^rootfs:" | sed 's/^rootfs: *//; s/:.*//')
 if [ -z "$ROOTFS_STORAGE" ]; then
-  ROOTFS_STORAGE="local-zfs"
+  ROOTFS_STORAGE=$(pvesm status --content rootdir 2>/dev/null | awk 'NR>1 {print $1; exit}')
+fi
+if [ -z "$ROOTFS_STORAGE" ]; then
+  fail "Cannot determine rootfs storage for clone (source vmid=$SOURCE_VMID, no rootdir-content storages found)"
 fi
 
 # Temporarily remove bind mounts (pct snapshot/clone refuse if any mp*

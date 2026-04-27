@@ -23,7 +23,7 @@
       "description": "One per line: key=/container/path",
       "template": "150-conf-create-storage-volumes-for-lxc.json",
       "templatename": "Create Storage Volumes for LXC",
-      "default": "data=var/lib/gitea\nconfig=etc/gitea"
+      "default": "data=var/lib/gitea,size=2G\nconfig=etc/gitea"
     },
     {
       "id": "envs",
@@ -44,8 +44,7 @@
       "description": "Proxmox storage for the container rootfs",
       "advanced": true,
       "template": "100-conf-create-configure-lxc.json",
-      "templatename": "Create and Configure LXC",
-      "default": "local-zfs"
+      "templatename": "Create and Configure LXC"
     },
     {
       "id": "volume_storage",
@@ -87,6 +86,10 @@
     {
       "id": "ssl_mode",
       "value": "native"
+    },
+    {
+      "id": "ssl.needs_ca_cert",
+      "value": "true"
     }
   ],
   "installation": {},
@@ -95,22 +98,36 @@
   "tags": [
     "development"
   ],
-  "supported_addons": ["addon-oidc"],
-  "oidc_roles": [
-    { "key": "admin", "display_name": "Administrator" }
+  "supported_addons": [
+    "addon-oidc"
   ],
-  "stacktype": ["postgres", "gitea"],
+  "oidc_roles": [
+    {
+      "key": "admin",
+      "display_name": "Administrator"
+    }
+  ],
+  "stacktype": [
+    "postgres",
+    "gitea"
+  ],
   "stack_usage": [
     {
       "stacktype": "gitea",
       "vars": [
-        { "name": "GITEA_ADMIN_PASSWORD", "replacement": "manual" }
+        {
+          "name": "GITEA_ADMIN_PASSWORD",
+          "replacement": "manual"
+        }
       ]
     },
     {
       "stacktype": "postgres",
       "vars": [
-        { "name": "POSTGRES_PASSWORD", "replacement": "manual" }
+        {
+          "name": "POSTGRES_PASSWORD",
+          "replacement": "manual"
+        }
       ]
     }
   ]

@@ -6,7 +6,8 @@
   "tags": ["database"],
   "stacktype": "pgadmin",
   "properties": [
-    { "id": "envs", "default": "PGADMIN_DEFAULT_EMAIL=admin@example.com\nPGADMIN_DEFAULT_PASSWORD={{ PGADMIN_DEFAULT_PASSWORD }}" }
+    { "id": "envs", "default": "PGADMIN_DEFAULT_EMAIL=admin@example.com\nPGADMIN_DEFAULT_PASSWORD={{ PGADMIN_DEFAULT_PASSWORD }}" },
+    { "id": "disk_size", "value": "1.5" }
   ],
   "installation": {
     "image": [

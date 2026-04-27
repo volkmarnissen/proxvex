@@ -17,6 +17,9 @@
     "pre_start": [
       "107-conf-oci-lxc-configuration.json"
     ],
+    "pre_start_finalize": [
+      "100-conf-unmount-volumes.json"
+    ],
     "start": [
       "200-start-lxc.json",
       "210-wait-for-container-ready.json"
@@ -39,6 +42,9 @@
       "101-conf-restore-settings.json",
       "107-conf-oci-lxc-configuration.json"
     ],
+    "pre_start_finalize": [
+      "100-conf-unmount-volumes.json"
+    ],
     "start": [
       "200-start-lxc.json",
       "210-wait-for-container-ready.json"
@@ -60,6 +66,9 @@
       "150-conf-create-storage-volumes-for-lxc.json",
       "185-host-resolve-dependency-hosts.json",
       "190-host-write-lxc-notes.json"
+    ],
+    "pre_start_finalize": [
+      "100-conf-unmount-volumes.json"
     ],
     "start": [
       "200-start-lxc.json",

@@ -25,6 +25,7 @@ permissions:
 jobs:
   refresh:
     runs-on: [self-hosted, linux, ubuntupve]
+    environment: livetest
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -34,6 +35,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Materialize e2e/config.json from secret
+        env:
+          E2E_CONFIG: ${{ secrets.E2E_CONFIG }}
+        run: |
+          if [ -z "$E2E_CONFIG" ]; then
+            echo "::error::Missing GitHub secret E2E_CONFIG (full e2e/config.json content)"
+            exit 1
+          fi
+          printf '%s' "$E2E_CONFIG" > e2e/config.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

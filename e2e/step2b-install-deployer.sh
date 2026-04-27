@@ -123,6 +123,40 @@ echo ""
 [ "$SSH_READY" = "true" ] || error "Cannot connect to $NESTED_IP via SSH after 60s"
 success "SSH connection verified"
 
+# Ensure the ghcr.io mirror's alias IP (10.0.0.2) is back after reboot and the
+# mirror container is running. On older mirrors-ready snapshots the IP was only
+# added at runtime (non-persistent), so `qm rollback + qm start` above loses
+# it and the ghcr-mirror container can't re-bind. Use a systemd oneshot unit
+# (rather than /etc/network/interfaces.d/, which ifupdown2 rejects for
+# colon-aliased stanzas) so the IP comes up on every boot of the snapshot.
+nested_ssh "cat > /etc/systemd/system/vmbr1-ghcr-alias.service <<'EOF'
+[Unit]
+Description=Secondary IP 10.0.0.2 on vmbr1 for ghcr.io pull-through mirror
+After=networking.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/ip addr add 10.0.0.2/24 dev vmbr1
+ExecStartPost=/bin/docker start ghcr-mirror
+ExecStop=/sbin/ip addr del 10.0.0.2/24 dev vmbr1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable vmbr1-ghcr-alias.service
+"
+# Run once now so the current boot has the IP + mirror container before we
+# snapshot deployer-installed.
+nested_ssh "ip addr show vmbr1 | grep -q '10.0.0.2/' || ip addr add 10.0.0.2/24 dev vmbr1"
+nested_ssh "docker ps -q -f name='^ghcr-mirror$' | grep -q . || docker start ghcr-mirror >/dev/null 2>&1 || true"
+
+# Purge the obsolete ifupdown-style stanza written by earlier step2b runs — it
+# confuses ifupdown2 ("cannot find interfaces: vmbr1:ghcr") on boot.
+nested_ssh "rm -f /etc/network/interfaces.d/vmbr1-ghcr-mirror"
+
 # Step 3: Build proxvex Docker image locally
 header "Building local proxvex Docker image"
 cd "$PROJECT_ROOT"
@@ -230,6 +264,31 @@ nested_ssh "
   iptables-save > /etc/iptables/rules.v4
 "
 success "Nested VM :3080 → $DEPLOYER_IP:3080, :3443 → $DEPLOYER_IP:3443 (persisted)"
+
+# Make the deployer hostname resolvable from sibling LXC containers.
+# The deployer generates its base URL as http://$(hostname):3080 which becomes
+# http://proxvex:3080 — other LXCs use this URL to fetch the CA cert (via
+# `Trust Deployer CA`). Without a DNS entry, those containers get
+# "Could not download CA certificate". Add it to dnsmasq and reload.
+nested_ssh "
+  cfg=/etc/dnsmasq.d/proxvex-deployer.conf
+  {
+    # Sibling LXCs use 'http://proxvex:3080' as deployer URL.
+    # Use host-record (not address=) so the entry beats DHCP-derived
+    # hostname leases from previous test containers — `address=/proxvex/…`
+    # gets shadowed by stale DHCP leases for any container that briefly
+    # ran with hostname 'proxvex'.
+    echo 'host-record=proxvex,$DEPLOYER_IP'
+    # 'docker-registry-mirror' is what registry-mirror-common.sh's mirror_detect
+    # looks for. Point it at 10.0.0.1 (the dockerhub-mirror) so the trust-CA
+    # post_start script enters its mirror branch and configures Docker.
+    echo 'host-record=docker-registry-mirror,10.0.0.1'
+  } > \$cfg
+  # Full restart — SIGHUP/reload doesn't always pick up new files under
+  # /etc/dnsmasq.d/ on this Proxmox install.
+  systemctl restart dnsmasq 2>/dev/null || true
+"
+success "dnsmasq: proxvex → $DEPLOYER_IP"
 
 # Step 9: Verify API before snapshotting
 info "Verifying deployer API..."

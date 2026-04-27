@@ -21,20 +21,27 @@ import { resolveVolumeStorage } from "./live-test-runner.mjs";
 /** Tasks that use create_ct + replace_ct (old container must stay running) */
 const REPLACE_CT_TASKS = ["upgrade", "reconfigure"];
 
-/** Find an existing managed container by application_id via the installations API */
+/** Find an existing managed container by application_id via the installations API.
+ *
+ * `expectedHostname` lets the caller disambiguate between sibling containers of
+ * the same application (e.g. nginx-default vs nginx-acme vs nginx-oidc-ssl).
+ * Without it we fall back to lowest-VMID-first, which after a replace_ct flow
+ * may return the wrong sibling — leading to result.vmId pointing at an unrelated
+ * container that then gets cleaned up incorrectly while the real target leaks. */
 async function findExistingVm(
   _apiUrl: string,
   _veHost: string,
   applicationId: string,
   pveHost: string,
   sshPort: number,
+  expectedHostname?: string,
 ): Promise<{ vm_id: number; addons?: string[] } | null> {
   // Scan PVE host directly for running managed containers.
   // More reliable than deployer context which may be stale after rollbacks.
   try {
-    // List all running containers, then check each for the application_id
     const pctList = nestedSsh(pveHost, sshPort,
       `pct list 2>/dev/null | tail -n +2 | awk '{print $1}'`, 10000);
+    let firstAppMatch: { vm_id: number; addons?: string[] } | null = null;
     for (const line of pctList.split("\n")) {
       const vmId = parseInt(line.trim(), 10);
       if (isNaN(vmId)) continue;
@@ -45,12 +52,19 @@ async function findExistingVm(
         const appMatch = conf.match(/application-id\s+(\S+)/);
         const appId = appMatch?.[1]?.replace(/%20/g, " ");
         if (appId !== applicationId) continue;
-        // Extract addons
         const addonMatches = conf.matchAll(/addon\s+(\S+)/g);
         const addons = [...addonMatches].map(m => m[1]!).filter(Boolean);
-        return { vm_id: vmId, addons: addons.length > 0 ? addons : undefined };
+        const result = { vm_id: vmId, addons: addons.length > 0 ? addons : undefined };
+        if (expectedHostname) {
+          const hostMatch = conf.match(/^hostname:\s*(\S+)/m);
+          if (hostMatch?.[1] === expectedHostname) return result;
+          if (!firstAppMatch) firstAppMatch = result;
+          continue;
+        }
+        return result;
       } catch { continue; }
     }
+    if (firstAppMatch) return firstAppMatch;
   } catch { /* ignore */ }
   return null;
 }
@@ -181,16 +195,38 @@ export async function executeScenarios(
 
       const buildResult = buildParams(scenario, baseParams, templateVars, tmpDir);
 
-      // For upgrade/reconfigure: find existing VM
+      // For upgrade/reconfigure: find existing VM. Prefer a same-application
+      // dependency declared in `depends_on` (e.g. nginx/reconf-addons-on
+      // explicitly clones from nginx/default — without this, when multiple
+      // siblings exist, findExistingVm picked the lowest VMID and cloned the
+      // wrong container).
       let existingVm: { vm_id: number; addons?: string[] } | null = null;
       if (isReplaceCt) {
-        existingVm = await findExistingVm(apiUrl, veHost, scenario.application, config.pveHost, config.portPveSsh);
+        if (scenario.depends_on) {
+          for (const depId of scenario.depends_on) {
+            const depStep = planned.find((p) => p.scenario.id === depId);
+            if (depStep && depStep.scenario.application === scenario.application) {
+              existingVm = { vm_id: depStep.vmId };
+              logInfo(`Using depended-on VM ${depStep.vmId} for ${task} (from ${depId})`);
+              break;
+            }
+          }
+        }
+        if (!existingVm) {
+          // Pre-replace lookup: the source container should match the
+          // scenario's hostname before reconfigure runs.
+          existingVm = await findExistingVm(apiUrl, veHost, scenario.application, config.pveHost, config.portPveSsh, step.hostname);
+        }
         if (!existingVm) {
           const errMsg = `No existing VM found for ${scenario.application} — cannot ${task}`;
           logFail(errMsg);
           result.errors.push(errMsg);
           result.failed++;
-          break;
+          // Skip this scenario but keep running the rest of the --all plan.
+          // Aborting here (via `break`) hid many passable scenarios whenever
+          // a reconfigure/upgrade task's live dependency VM had already been
+          // torn down by a previous scenario's cleanup.
+          continue;
         }
         buildResult.params.push({ name: "previouse_vm_id", value: String(existingVm.vm_id) });
         logInfo(`Found existing VM ${existingVm.vm_id} for ${task} (previouse_vm_id)`);
@@ -215,7 +251,11 @@ export async function executeScenarios(
       }
       if (buildResult.stackId) {
         paramsObj.stackId = buildResult.stackId;
-      } else if (step.hasStacktype) {
+      } else {
+        // step.hasStacktype only reflects the application's own stacktype, but
+        // addons can pull in their own stacktypes (e.g. nginx + addon-acme →
+        // cloudflare). ensureStacks records the full picture in stackIdMap, so
+        // use that as the source of truth — passes addon-only stacks too.
         const appStackIds = stackIdMap.get(`${scenario.application}/${step.stackName}`);
         if (appStackIds && appStackIds.length > 1) {
           paramsObj.stackIds = appStackIds;
@@ -328,9 +368,14 @@ export async function executeScenarios(
         continue;
       }
 
-      // For replace_ct: discover new VM ID
+      // For replace_ct: discover new VM ID. Pass step.hostname so the lookup
+      // disambiguates between siblings of the same application (e.g. nginx
+      // tests run with hostnames nginx-default, nginx-acme, nginx-oidc-ssl,
+      // nginx-reconf-addons-on, nginx-reconf-addons-off — all share
+      // application-id=nginx, so without hostname the lowest-VMID match wins
+      // and we record the wrong container).
       if (isReplaceCt) {
-        const newVm = await findExistingVm(apiUrl, veHost, scenario.application, config.pveHost, config.portPveSsh);
+        const newVm = await findExistingVm(apiUrl, veHost, scenario.application, config.pveHost, config.portPveSsh, step.hostname);
         if (newVm) {
           logOk(`replace_ct: new VM_ID=${newVm.vm_id} (was ${step.vmId})`);
           step.vmId = newVm.vm_id;
