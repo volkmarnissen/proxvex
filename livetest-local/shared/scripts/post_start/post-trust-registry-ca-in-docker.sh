@@ -18,7 +18,11 @@ grep -q "$GHCR_MARKER" /etc/hosts 2>/dev/null || {
 
 # Docker insecure-registries
 if ! grep -q "ghcr.io" /etc/docker/daemon.json 2>/dev/null; then
-  printf '{\n  "insecure-registries": ["registry-1.docker.io", "index.docker.io", "ghcr.io"]\n}\n' > /etc/docker/daemon.json
+  # registry-mirrors with explicit http:// is what makes Docker actually use
+  # the HTTP path. Without it, the daemon tries HTTPS first against
+  # registry-1.docker.io and errors with "server gave HTTP response to HTTPS
+  # client" — insecure-registries permits HTTP but doesn't make Docker prefer it.
+  printf '{\n  "insecure-registries": ["registry-1.docker.io", "index.docker.io", "ghcr.io"],\n  "registry-mirrors": ["http://registry-1.docker.io"]\n}\n' > /etc/docker/daemon.json
   if command -v rc-service > /dev/null 2>&1; then
     rc-service docker restart >&2 2>&1 || true
   elif command -v systemctl > /dev/null 2>&1; then
