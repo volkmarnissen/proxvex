@@ -653,6 +653,20 @@ export function prepareVms(
         `pct unlock ${p.vmId} 2>/dev/null; true`, 15000);
     } catch { /* ignore */ }
 
+    // Remove a leftover source-isolation clone (1000 + vmId). A scenario that
+    // dies between `pct clone` and its own cleanup leaves the clone behind,
+    // and because the clone id is derived from the source it blocks *every*
+    // later run of that scenario — observed as
+    // "no free VMID found between ..." on a CT stuck in lock=destroyed.
+    // Unlock first: a half-destroyed CT refuses `pct destroy` while locked.
+    try {
+      nestedSsh(config.pveHost, config.portPveSsh,
+        `pct status ${1000 + p.vmId} >/dev/null 2>&1 `
+        + `&& { pct unlock ${1000 + p.vmId} 2>/dev/null; `
+        + `pct destroy ${1000 + p.vmId} --purge 2>/dev/null; }; true`,
+        60000);
+    } catch { /* ignore */ }
+
     let status: string;
     try {
       status = nestedSshStrict(config.pveHost, config.portPveSsh,

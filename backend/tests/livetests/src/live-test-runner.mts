@@ -314,7 +314,23 @@ export function setupPortForwarding(config: {
   }
   try {
     for (const fwd of config.portForwarding) {
-      // a) dnsmasq static DHCP lease on nested VM
+      // a) dnsmasq static DHCP lease on nested VM.
+      //
+      // Two parts:
+      //   1. The `dhcp-host=<hostname>,<ip>` directive must be present in
+      //      /etc/dnsmasq.d/e2e-nat.conf so dnsmasq pins that hostname to
+      //      the configured IP on the next DHCPDISCOVER.
+      //   2. Any *existing* lease on the same IP (held by a previous
+      //      container's MAC after a destroy+recreate cycle) blocks the
+      //      pin: dnsmasq logs `not using configured address <ip> because
+      //      it is leased to <stale-mac>` and the new container falls
+      //      back to a random pool IP. Drop the stale lease + reload
+      //      dnsmasq before reinstalling the hostname entry so the next
+      //      DHCPDISCOVER actually lands on the configured IP.
+      nestedSsh(config.pveHost, config.portPveSsh,
+        `sed -i '/[[:space:]]${fwd.ip}[[:space:]]/d; / ${fwd.hostname} /d' ` +
+        `/var/lib/misc/dnsmasq.leases 2>/dev/null || true`,
+        5000);
       const dhcpCheck = nestedSsh(config.pveHost, config.portPveSsh,
         `grep -q 'dhcp-host=${fwd.hostname}' /etc/dnsmasq.d/e2e-nat.conf 2>/dev/null && echo "exists" || echo "missing"`,
         5000);
@@ -323,6 +339,13 @@ export function setupPortForwarding(config: {
           `echo "dhcp-host=${fwd.hostname},${fwd.ip}" >> /etc/dnsmasq.d/e2e-nat.conf`,
           5000);
       }
+      // Reload dnsmasq so the lease wipe + any new dhcp-host entry takes
+      // effect for the next DHCPDISCOVER from this hostname. systemctl
+      // reload is enough — dnsmasq re-reads /etc/dnsmasq.d/*.conf and
+      // /var/lib/misc/dnsmasq.leases without dropping in-flight clients.
+      nestedSsh(config.pveHost, config.portPveSsh,
+        `systemctl reload dnsmasq 2>/dev/null || systemctl restart dnsmasq`,
+        5000);
 
       // b) iptables DNAT on nested VM (inner forwarding).
       //

@@ -57,9 +57,21 @@ def _map_id_via_idmap(
     return None
 
 
-def _default_host_id_for_unprivileged(container_id: int) -> int:
-    # Proxmox default idmap start for unprivileged containers.
-    return 100000 + container_id
+def _passthrough_host_id_fallback(container_id: int) -> int:
+    # Fallback host id when no lxc.idmap line is visible for this id yet.
+    #
+    # The serial device is always owned by the application's uid/gid, and proxvex
+    # ALWAYS creates a 1:1 passthrough idmap entry for that exact uid/gid (see
+    # conf-setup-lxc-uid-mapping.py / conf-setup-lxc-gid-mapping.py). So the host
+    # device node must be owned by the SAME numeric id (1:1), not the shifted
+    # 100000+id range used for ordinary unprivileged ids.
+    #
+    # We only reach this fallback when the idmap lines are not readable at this
+    # point (e.g. a stale pmxcfs read right after they were written, or a
+    # reconfigure clone that did not re-emit mapped_uid/mapped_gid). Using the
+    # shifted value here would chown the device to an id that maps to "nobody"
+    # inside the container, leaving the app unable to open the port.
+    return container_id
 
 
 def best_effort_chown_numeric(path: str, uid: int, gid: int) -> None:
@@ -148,7 +160,12 @@ def main() -> int:
         if host_uid_mapped is not None:
             host_uid = host_uid_mapped
         elif is_unpriv:
-            host_uid = _default_host_id_for_unprivileged(uid)
+            host_uid = _passthrough_host_id_fallback(uid)
+            log(
+                f"warning: no lxc.idmap 'u' entry visible for uid={uid}; "
+                + f"assuming 1:1 passthrough (host_uid={host_uid}). "
+                + "Serial mapping must run after idmap setup."
+            )
         else:
             host_uid = uid
 
@@ -159,7 +176,12 @@ def main() -> int:
         if host_gid_mapped is not None:
             host_gid = host_gid_mapped
         elif is_unpriv:
-            host_gid = _default_host_id_for_unprivileged(gid)
+            host_gid = _passthrough_host_id_fallback(gid)
+            log(
+                f"warning: no lxc.idmap 'g' entry visible for gid={gid}; "
+                + f"assuming 1:1 passthrough (host_gid={host_gid}). "
+                + "Serial mapping must run after idmap setup."
+            )
         else:
             host_gid = gid
 

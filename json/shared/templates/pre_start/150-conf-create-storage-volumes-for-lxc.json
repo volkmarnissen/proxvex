@@ -4,13 +4,15 @@
   "execute_on": "ve",
   "skip_if_all_missing": [
     "volumes",
-    "addon_volumes"
+    "addon_volumes",
+    "base_volumes"
   ],
   "parameters": [
     "vm_id",
     "hostname",
     "volumes",
     "addon_volumes",
+    "base_volumes",
     "volume_storage",
     "volume_size",
     "volume_backup",

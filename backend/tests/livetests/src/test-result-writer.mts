@@ -103,6 +103,15 @@ export class TestResultWriter {
     return this.outputDir;
   }
 
+  /** Update the apiUrl used for subsequent bundle pulls. Needed when a
+   *  self-reconfigure/upgrade scenario replaces the Hub mid-test — the
+   *  scenario-executor watcher detects the new endpoint via the 351
+   *  emit and calls this so test-result.write()'s bundle fetch goes
+   *  against the live URL instead of the dead pre-replace one. */
+  setApiUrl(apiUrl: string | undefined): void {
+    this.apiUrl = apiUrl;
+  }
+
   getCommandLine(): string {
     return this.commandLine;
   }

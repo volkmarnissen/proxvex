@@ -45,8 +45,6 @@
       "subnet": "10.99.3",
       "bridge": "vmbr3",
       "filesystem": "zfs",
-      "deployerHost": "localhost",
-      "deployerPort": "3301",
       "snapshot": {
         "enabled": true
       },
@@ -70,7 +68,9 @@
           "ip": "10.0.0.140",
           "containerPort": 3000
         }
-      ]
+      ],
+      "deployerPort": "3301",
+      "deployerHost": "localhost"
     },
     "github-action": {
       "description": "GitHub Actions CI testing",

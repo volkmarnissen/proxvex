@@ -306,6 +306,41 @@ export class ReplacedContainerCleanupService {
     return { destroyed, failed };
   }
 
+  /**
+   * Destroy an explicit list of containers in a single VE context, immediately
+   * and without grace-period check. Used by the installations page to purge
+   * stopped/migrated debris. Reuses the same `host-destroy-replaced-container.sh`
+   * script as the locked/time-based cleanup (pct unlock + stop + destroy
+   * --force --purge; exits 0 if the container no longer exists). A failure on
+   * one vmId does not abort the rest.
+   */
+  async destroyContainers(
+    veContextKey: string,
+    vmIds: number[],
+  ): Promise<ILockedCleanupResult> {
+    const veHost = veContextKey.replace(/^ve_/, "");
+    const destroyed: string[] = [];
+    const failed: ILockedCleanupResult["failed"] = [];
+    for (const vmId of vmIds) {
+      try {
+        await this.destroyForContext(veContextKey, vmId);
+        destroyed.push(`${vmId}@${veHost}`);
+      } catch (err: any) {
+        const errorMsg = err?.message || String(err);
+        logger.warn(`Destroy of container ${vmId}@${veHost} failed`, {
+          error: errorMsg,
+        });
+        failed.push({ vmid: vmId, ve_host: veHost, error: errorMsg });
+      }
+    }
+    if (destroyed.length > 0) {
+      logger.info(
+        `Installations cleanup destroyed ${destroyed.length}: ${destroyed.join(", ")}`,
+      );
+    }
+    return { destroyed, failed };
+  }
+
   private async listLockedForContext(
     veContextKey: string,
   ): Promise<ReplacedContainer[]> {

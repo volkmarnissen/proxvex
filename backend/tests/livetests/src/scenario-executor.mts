@@ -1203,6 +1203,7 @@ export async function executeScenarios(
               }
               // Start the clone so downstream `pct exec` works (the clone is
               // stopped by default).
+              let cloneAttachable = false;
               try {
                 await nestedSshAsync(
                   config.pveHost, config.portPveSsh,
@@ -1212,7 +1213,15 @@ export async function executeScenarios(
                 // Poll until lxc-attach succeeds (init PID is reachable).
                 // nestedSsh swallows errors; use nestedSshStrict here so the
                 // poll loop sees failures and retries.
-                const deadline = Date.now() + 30000;
+                //
+                // 120s, not 30s: under --all four workers clone and boot
+                // containers on one ZFS pool at once, and a merely slow clone
+                // used to fall out of this loop silently — the scenario then
+                // ran against a stopped container and its first
+                // execute_on:lxc template died with "lxc-attach: Connection
+                // refused - Failed to get init pid", leaving the clone behind
+                // to block its VMID for every later run.
+                const deadline = Date.now() + 120000;
                 while (Date.now() < deadline) {
                   try {
                     await nestedSshStrictAsync(
@@ -1220,6 +1229,7 @@ export async function executeScenarios(
                       `pct exec ${cloneVmId} -- /bin/true 2>/dev/null`,
                       5000,
                     );
+                    cloneAttachable = true;
                     break;
                   } catch {
                     await new Promise((r) => setTimeout(r, 1000));
@@ -1233,7 +1243,14 @@ export async function executeScenarios(
               if (sourceVm.addons) cloned.addons = sourceVm.addons;
               if (sourceVm.hostname) cloned.hostname = sourceVm.hostname;
               sourceVm = cloned;
-              logOk(`Source clone ready: VM ${cloneVmId} (will be destroyed after scenario)`);
+              if (cloneAttachable) {
+                logOk(`Source clone ready: VM ${cloneVmId} (will be destroyed after scenario)`);
+              } else {
+                logWarn(
+                  `Source clone ${cloneVmId} is not attachable after 120s — the scenario continues, `
+                  + `but any execute_on:lxc template will fail against it`,
+                );
+              }
             } catch (err) {
               logWarn(`pct clone failed (${err instanceof Error ? err.message : String(err)}) — falling back to shared source`);
               // Best-effort cleanup of a snapshot we may have created.
@@ -1406,6 +1423,86 @@ export async function executeScenarios(
       if (cliResult.restartKey) {
         ctx.restartKey = cliResult.restartKey;
         await flushRunnerEvents(ctx);
+      }
+
+      // Phase-2 OIDC suite: pick up endpoint-state outputs emitted by
+      // template 351-post-emit-endpoint-config from the message stream.
+      //
+      // Critical ordering: 351 runs in `post_start` AND as the first step
+      // of `replace_ct` in oci-image's upgrade/reconfigure pipeline. The
+      // replace_ct re-emit is what the CLI subprocess actually needs — it
+      // fires immediately before `900-replace-ct` runs `pct stop` on the
+      // old Hub, giving the CLI's pendingEndpointUrl capture (cli-progress
+      // failover) a final poll window before its URL goes dark. Either
+      // emit lands in cliResult.messages, so the runner watcher below
+      // updates apiUrl correctly regardless of whether the CLI managed
+      // to reach the new Hub mid-task or not.
+      //
+      // We therefore run the watcher BEFORE the success/failure branch,
+      // so the apiUrl + auth state are correct for the next scenario in
+      // an OIDC-suite chain regardless of whether THIS scenario's CLI
+      // managed to reach the new Hub or not.
+      {
+        const ep: { url?: string; requiresOidc?: string; issuer?: string } = {};
+        for (const msg of cliResult.messages) {
+          if (!msg.result) continue;
+          // result may carry a leading LXC_MANAGER_JSON_START_MARKER_<id>\n
+          // prefix from the SSH-executor's marker mechanism (banner-strip
+          // line). The marker is supposed to be stripped server-side before
+          // emit, but isn't for some script paths — slice from the first '['
+          // so we parse the JSON payload regardless.
+          const raw = msg.result;
+          const jsonStart = raw.indexOf("[");
+          if (jsonStart < 0) continue;
+          try {
+            const parsed = JSON.parse(raw.slice(jsonStart));
+            if (!Array.isArray(parsed)) continue;
+            for (const item of parsed) {
+              if (item && typeof item === "object" && typeof item.id === "string") {
+                if (item.id === "endpoint_url") ep.url = String(item.value ?? "");
+                else if (item.id === "endpoint_requires_oidc") ep.requiresOidc = String(item.value ?? "");
+                else if (item.id === "endpoint_oidc_issuer") ep.issuer = String(item.value ?? "");
+              }
+            }
+          } catch { /* not JSON */ }
+        }
+        if (ep.url) {
+          const needsOidc = ep.requiresOidc === "true";
+          const urlChanged = ep.url !== apiUrl;
+          const oidcChanged = needsOidc !== !!oidcCredentials;
+          // Only a scenario that replaces the Hub itself may move the runner's
+          // apiUrl. Every other scenario reporting an endpoint is noise — and
+          // harmful noise under --all, where all workers share this state: one
+          // stray report sends every concurrent CLI call to a dead URL. No
+          // reachability probe here on purpose; during a genuine Hub replace
+          // the new endpoint is briefly down by design.
+          const replacesHub = scenario.id.includes("/self-");
+          if ((urlChanged || oidcChanged) && !replacesHub) {
+            logWarn(
+              `Ignoring endpoint report ${ep.url} from ${scenario.id} — only self-* scenarios move the Hub`,
+            );
+          } else if (urlChanged || oidcChanged) {
+            logInfo(`Endpoint state shift: ${apiUrl} → ${ep.url} (OIDC ${needsOidc ? "required" : "cleared"})`);
+            apiUrl = ep.url;
+            if (!needsOidc) {
+              oidcCredentials = undefined;
+              runnerAuth.oidcCreds = undefined;
+              runnerAuth.token = undefined;
+              runnerAuth.tokenExp = undefined;
+            } else if (!oidcCredentials) {
+              oidcCredentials = await loadOidcCredsFromStack(step.stackName);
+              if (oidcCredentials) {
+                logOk(`Test OIDC deployer credentials loaded post-switch from oidc_${step.stackName}`);
+              }
+            }
+            // Keep TestResultWriter in sync so the bundle fetch (POSTed
+            // after this scenario's write()) goes against the new URL.
+            // Without this, debug bundles for a self-reconfigure scenario
+            // are always "unavailable — bundle expired" because the writer
+            // tries the dead old URL.
+            resultWriter?.setApiUrl(apiUrl);
+          }
+        }
       }
 
       // expect2fail: if the scenario declares specific templates expected

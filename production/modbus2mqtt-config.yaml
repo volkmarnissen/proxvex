@@ -10,23 +10,22 @@
 #
 # Broker eclipse-mosquitto:8883 — bare hostname (LAN-DNS), SNI-Override
 # zwingt TLS-Cert-Prüfung gegen den von addon-ssl für eclipse-mosquitto
-# ausgestellten CN `eclipse-mosquitto.local`. Client-Cert aus addon-mtls
+# ausgestellten CN `eclipse-mosquitto`. Client-Cert aus addon-mtls
 # in /ssl/mtls/modbus2mqtt/.
 version: "0.1"
 mqttbasetopic: modbus2mqtt
 mqttdiscoveryprefix: homeassistant
 mqttdiscoverylanguage: en
 mqttusehassio: false
-mqttcaFile: /ssl/mtls/modbus2mqtt/chain.pem
-mqttcertFile: /ssl/mtls/modbus2mqtt/cert.pem
-mqttkeyFile: /ssl/mtls/modbus2mqtt/privkey.pem
-mqttconnect:
-  mqttserverurl: mqtts://eclipse-mosquitto:8883
+mqtt:
+  url: mqtts://eclipse-mosquitto:8883
   clientId: modbus2mqtt
-  clean: true
-  connectTimeout: 60000
-  servername: eclipse-mosquitto.local
-  rejectUnauthorized: true
+  tls:
+    ca: /ssl/mtls/modbus2mqtt/chain.pem
+    cert: /ssl/mtls/modbus2mqtt/cert.pem
+    key: /ssl/mtls/modbus2mqtt/privkey.pem
+    servername: eclipse-mosquitto
+    rejectUnauthorized: true
 httpport: 3000
 fakeModbus: false
 filelocation: /data

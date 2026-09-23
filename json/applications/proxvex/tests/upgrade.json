@@ -1,5 +1,6 @@
 {
   "task": "upgrade",
+  "run_in_ve": true,
   "depends_on": [
     "proxvex/default"
   ],

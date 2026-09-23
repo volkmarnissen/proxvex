@@ -1,0 +1,21 @@
+{
+  "execute_on": "ve",
+  "name": "Emit endpoint config",
+  "description": "Emits the deployer's current external endpoint + auth state as task outputs so the live-test-runner can switch its apiUrl mid-suite after a self-reconfigure/upgrade. Reads truth from /etc/pve/lxc/<vm_id>.conf (OIDC env lines, /etc/ssl/addon mountpoint) — never from scenario-request params. Three outputs: endpoint_url, endpoint_requires_oidc (true|false), endpoint_oidc_issuer.",
+  "parameters": [
+    "vm_id",
+    "deployer_base_url",
+    "application_id"
+  ],
+  "commands": [
+    {
+      "name": "Emit endpoint config",
+      "script": "post-emit-endpoint-config.sh",
+      "outputs": [
+        "endpoint_url",
+        "endpoint_requires_oidc",
+        "endpoint_oidc_issuer"
+      ]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ HOSTNAME="{{ hostname }}"
 PREV_VMID="{{ previous_vm_id }}"
 VOLUMES="{{ volumes }}"
 ADDON_VOLUMES="{{ addon_volumes }}"
+BASE_VOLUMES="{{ base_volumes }}"
 VOLUME_STORAGE="{{ volume_storage }}"
 VOLUME_SIZE="{{ volume_size }}"
 VOLUME_BACKUP="{{ volume_backup }}"
@@ -48,6 +49,20 @@ fi
 VOLUMES=$(pve_merge_addon_volumes "$VOLUMES" "$ADDON_VOLUMES")
 if [ -n "$ADDON_VOLUMES" ]; then
   log "Merged addon_volumes with base volumes"
+fi
+
+# Volumes a base application requires of everything extending it — e.g.
+# docker-compose contributes the proxvex volume, because the on-start hook
+# that launches dockerd after a plain `pct restart` lives in
+# <proxvex volume>/on_start.d/. Kept separate from 'volumes' so an extending
+# application can declare its own volumes without dropping them; merging
+# leaves an application's own entry for the same key authoritative.
+if [ -z "$BASE_VOLUMES" ] || [ "$BASE_VOLUMES" = "NOT_DEFINED" ]; then
+  BASE_VOLUMES=""
+fi
+if [ -n "$BASE_VOLUMES" ]; then
+  VOLUMES=$(pve_merge_addon_volumes "$VOLUMES" "$BASE_VOLUMES")
+  log "Merged base_volumes with application volumes"
 fi
 
 if [ -n "$VOLUMES" ]; then

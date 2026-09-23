@@ -16,10 +16,16 @@ VM_ID="{{ vm_id }}"
 log() { echo "$@" >&2; }
 
 SAFE_HOST=$(pve_sanitize_name "$HOSTNAME")
-VOLUME_DIR=$(resolve_host_volume "$SAFE_HOST" "proxvex" "$VM_ID")
+# Capture failures from resolve_host_volume without letting `set -e` abort
+# the whole pipeline. When the addons that own the on-start volume have
+# been disabled (e.g. `disable-https-oidc` strips addon-ssl + addon-oidc),
+# the new CT has no `subvol-<vmid>-<host>-proxvex` mount — that's the
+# correct end-state, NOT a fatal error. Treat the missing volume as a
+# "nothing to do" no-op and emit the empty outputs frame.
+VOLUME_DIR=$(resolve_host_volume "$SAFE_HOST" "proxvex" "$VM_ID") || VOLUME_DIR=""
 
-if [ ! -d "$VOLUME_DIR" ]; then
-  log "Volume directory $VOLUME_DIR does not exist, nothing to remove"
+if [ -z "$VOLUME_DIR" ] || [ ! -d "$VOLUME_DIR" ]; then
+  log "Volume directory missing/empty for ${SAFE_HOST}/proxvex (vmid $VM_ID) — nothing to remove (addons that own this volume are not active)"
   printf '[]\n'
   exit 0
 fi

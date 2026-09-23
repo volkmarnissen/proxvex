@@ -1,0 +1,19 @@
+{
+  "execute_on": "ve",
+  "name": "Read persisted ext domain",
+  "description": "On reconfigure, reads ZITADEL_EXTERNALDOMAIN back from the persisted /config/zitadel.yaml (ExternalDomain) so it keeps the install-time value instead of dropping to the hostname default. Without this, reconfigure regenerates docker-compose with Host:<hostname>, the API reports 'instance not found', and the login-v2 renders an empty form. No-op on fresh install (no persisted yaml).",
+  "parameters": [
+    "hostname",
+    "vm_id"
+  ],
+  "commands": [
+    {
+      "name": "Read persisted ext domain",
+      "script": "conf-read-externaldomain-from-config.sh",
+      "library": "pve-common.sh",
+      "outputs": [
+        "ZITADEL_EXTERNALDOMAIN"
+      ]
+    }
+  ]
+}

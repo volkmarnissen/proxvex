@@ -28,10 +28,12 @@ class MockVeConfigurationService {
   getInstallations = vi.fn(() => of<IInstallationsResponse>(mockInstallations));
   getInstallationVersions = vi.fn(() => of({ services: [], framework: 'oci-image' }));
   postVeUpgrade = vi.fn(() => of({ success: true, restartKey: 'rk_test' }));
+  destroyInstallations = vi.fn(() => of({ destroyed: [], failed: [] }));
 }
 
 class MockCacheService {
   getInstallations = vi.fn(() => of(mockInstallations));
+  invalidate = vi.fn();
 }
 
 // Ensure Angular testing environment is active (without deprecated imports in spec)
@@ -115,6 +117,85 @@ describe('InstalledList component (vitest)', () => {
         (b) => b.textContent?.trim() === 'Upgrade',
       );
       expect(upgradeBtn?.disabled).toBe(true);
+    });
+  });
+
+  describe('Cleanup of stopped/migrated containers', () => {
+    it('lists only non-running real containers as deletable', () => {
+      const cmp = TestBed.createComponent(InstalledList).componentInstance;
+      cmp.installations = [
+        { vm_id: 0, oci_image: '', is_host: true, status: 'running' },
+        { vm_id: 101, oci_image: 'x', status: 'running' },
+        { vm_id: 102, oci_image: 'x', status: 'stopped' },
+        { vm_id: 103, oci_image: 'x', status: 'Migrated' }, // case-insensitive
+      ];
+      const ids = cmp.deletableInstallations.map((i) => i.vm_id);
+      expect(ids).toEqual([102, 103]);
+    });
+
+    it('destroys the deletable vmIds one at a time and drops each card live', () => {
+      const fixture = TestBed.createComponent(InstalledList);
+      const cmp = fixture.componentInstance;
+      // Record how many containers are still present at each request — since the
+      // deletes run sequentially and each ok card is removed immediately, the
+      // 2nd request must see one fewer container than the 1st.
+      const sizeAtCall: number[] = [];
+      svc.destroyInstallations = vi.fn((ids: number[]) => {
+        sizeAtCall.push(cmp.installations.length);
+        return of({ destroyed: [`${ids[0]}@h`], failed: [] });
+      });
+      // Server truth after both deletes: only the running one remains.
+      cacheService.getInstallations = vi.fn(() =>
+        of([{ vm_id: 101, oci_image: 'x', status: 'running' }]),
+      );
+      cmp.installations = [
+        { vm_id: 101, oci_image: 'x', status: 'running' },
+        { vm_id: 102, oci_image: 'x', status: 'stopped' },
+        { vm_id: 103, oci_image: 'x', status: 'migrated' },
+      ];
+
+      cmp.deleteStoppedAndMigrated();
+
+      // One request per container, not one bulk call
+      expect(svc.destroyInstallations).toHaveBeenNthCalledWith(1, [102]);
+      expect(svc.destroyInstallations).toHaveBeenNthCalledWith(2, [103]);
+      expect(sizeAtCall).toEqual([3, 2]); // card removed live between requests
+      expect(cacheService.invalidate).toHaveBeenCalledTimes(1);
+      expect(cmp.deleting).toBe(false);
+      expect(cmp.deleteProgress).toBeUndefined();
+      expect(cmp.deleteStatus).toContain('2 Container gelöscht');
+    });
+
+    it('keeps failed containers visible and reports them in the status', () => {
+      const fixture = TestBed.createComponent(InstalledList);
+      const cmp = fixture.componentInstance;
+      // 102 fails server-side (failed[] non-empty), 103 succeeds.
+      svc.destroyInstallations = vi.fn((ids: number[]) =>
+        ids[0] === 102
+          ? of({ destroyed: [], failed: [{ vmid: 102, ve_host: 'h', error: 'boom' }] })
+          : of({ destroyed: ['103@h'], failed: [] }),
+      );
+      // Server truth after: the failed 102 still exists, 103 is gone.
+      cacheService.getInstallations = vi.fn(() =>
+        of([{ vm_id: 102, oci_image: 'x', status: 'stopped' }]),
+      );
+      cmp.installations = [
+        { vm_id: 102, oci_image: 'x', status: 'stopped' },
+        { vm_id: 103, oci_image: 'x', status: 'migrated' },
+      ];
+
+      cmp.deleteStoppedAndMigrated();
+
+      expect(cmp.installations.map((i) => i.vm_id)).toEqual([102]);
+      expect(cmp.deleteStatus).toContain('1 gelöscht');
+      expect(cmp.deleteStatus).toContain('fehlgeschlagen: 102');
+    });
+
+    it('does nothing when there is nothing to delete', () => {
+      const cmp = TestBed.createComponent(InstalledList).componentInstance;
+      cmp.installations = [{ vm_id: 101, oci_image: 'x', status: 'running' }];
+      cmp.deleteStoppedAndMigrated();
+      expect(svc.destroyInstallations).not.toHaveBeenCalled();
     });
   });
 });

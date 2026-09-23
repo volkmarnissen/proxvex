@@ -12,6 +12,7 @@ import { PersistenceManager } from "../persistence/persistence-manager.mjs";
 import { VeExecution } from "../ve-execution/ve-execution.mjs";
 import { determineExecutionMode } from "../ve-execution/ve-execution-constants.mjs";
 import { listManagedContainers } from "../services/container-list-service.mjs";
+import { ReplacedContainerCleanupService } from "../services/replaced-container-cleanup-service.mjs";
 import { sendErrorResponse } from "./webapp-error-utils.mjs";
 import {
   parseVersionString,
@@ -72,6 +73,7 @@ export function registerInstallationsRoutes(
   storageContext: ContextManager,
 ): void {
   const pm = PersistenceManager.getInstance();
+  const cleanupService = new ReplacedContainerCleanupService(storageContext);
 
   app.get(ApiUri.Installations, async (req, res) => {
     try {
@@ -109,6 +111,42 @@ export function registerInstallationsRoutes(
 
       const payload: IInstallationsResponse = [proxmoxEntry, ...containers];
       res.status(200).json(payload);
+    } catch (err: any) {
+      sendErrorResponse(res, err);
+    }
+  });
+
+  // --- POST /api/:veContext/installations/destroy ---
+  // Bulk-destroy an explicit list of containers (used by the installations
+  // page to purge stopped/migrated debris). Body: { vmIds: number[] }.
+  app.post(ApiUri.InstallationsDestroy, express.json(), async (req, res) => {
+    try {
+      const veContextKey = String(req.params.veContext || "").trim();
+      if (!veContextKey) {
+        res.status(400).json({ error: "Missing veContext" });
+        return;
+      }
+      const veContext = storageContext.getVEContextByKey(veContextKey);
+      if (!veContext) {
+        res.status(404).json({ error: "VE context not found" });
+        return;
+      }
+
+      const rawVmIds: unknown = req.body?.vmIds;
+      if (!Array.isArray(rawVmIds)) {
+        res.status(400).json({ error: "vmIds must be an array" });
+        return;
+      }
+      const vmIds = rawVmIds
+        .map((v) => Number(v))
+        .filter((n) => Number.isInteger(n) && n > 0);
+      if (vmIds.length === 0) {
+        res.status(400).json({ error: "No valid vmIds provided" });
+        return;
+      }
+
+      const result = await cleanupService.destroyContainers(veContextKey, vmIds);
+      res.status(200).json(result);
     } catch (err: any) {
       sendErrorResponse(res, err);
     }

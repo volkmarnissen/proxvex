@@ -1,0 +1,41 @@
+{
+  "name": "Cloudflare Tunnel",
+  "description": "Cloudflared connector for a remotely-managed Cloudflare Tunnel, run as a Docker Compose service. Establishes an outbound-only connection to Cloudflare's edge; all ingress/public-hostname routing (e.g. git.ohnewarum.de, auth.ohnewarum.de, ohnewarum.de) is configured in the Cloudflare Zero Trust dashboard, not in this application.",
+  "extends": "docker-compose",
+  "tags": [
+    "network",
+    "infrastructure"
+  ],
+  "supported_addons": ["addon-ssl"],
+  "required_addons": ["addon-ssl"],
+  "properties": [
+    { "id": "hostname", "default": "cloudflare-tunnel" },
+    { "id": "compose_project", "value": "cloudflare-tunnel" },
+    { "id": "compose_file", "value": "c2VydmljZXM6CiAgY2xvdWRmbGFyZWQ6CiAgICBpbWFnZTogY2xvdWRmbGFyZS9jbG91ZGZsYXJlZDoke0RPQ0tFUl9jbG91ZGZsYXJlX3R1bm5lbF9UQUd9CiAgICByZXN0YXJ0OiB1bmxlc3Mtc3RvcHBlZAogICAgbmV0d29ya19tb2RlOiBob3N0CiAgICBjb21tYW5kOiB0dW5uZWwgcnVuCiAgICB2b2x1bWVzOgogICAgICAjIGFkZG9uLXNzbCBwcm92aXNpb25zIHRoZSBpbnRlcm5hbCBDQSBjaGFpbiAoY2hhaW4ucGVtKSBpbnRvIHRoZSBgY2VydHNgCiAgICAgICMgdm9sdW1lOyBjbG91ZGZsYXJlZCB1c2VzIGl0IGFzIG9yaWdpbi1jYS1wb29sIHRvIHZhbGlkYXRlIGludGVybmFsCiAgICAgICMgSFRUUFMgb3JpZ2lucyAoZ2l0L2F1dGgvb2huZXdhcnVtLmRlKSB3aXRoIFRMUyB2ZXJpZmljYXRpb24gT04uCiAgICAgIC0gY2VydHM6L2V0Yy9zc2wvYWRkb246cm8KICAgIGVudmlyb25tZW50OgogICAgICBUVU5ORUxfVE9LRU46ICJ7eyBUVU5ORUxfVE9LRU4gfX0iCiAgICAgIFRVTk5FTF9PUklHSU5fQ0FfUE9PTDogL2V0Yy9zc2wvYWRkb24vY2hhaW4ucGVtCnZvbHVtZXM6CiAgY2VydHM6Cg==" },
+    { "id": "ssl_mode", "value": "certs" },
+    { "id": "ssl.needs_ca_cert", "value": "true" },
+    { "id": "ssl.needs_server_cert", "value": "false" },
+    { "id": "ssl.addon_volumes", "value": "certs=certs,0755,0:0\nproxvex=/etc/proxvex,0755,0:0" }
+  ],
+  "stacktype": "cloudflare-tunnel",
+  "stack_usage": [
+    {
+      "stacktype": "cloudflare-tunnel",
+      "vars": [
+        {
+          "name": "TUNNEL_TOKEN",
+          "replacement": "compose-env",
+          "compose_key": "TUNNEL_TOKEN"
+        }
+      ]
+    }
+  ],
+  "check": {
+    "check": [
+      "check-tunnel-connected.json"
+    ]
+  },
+  "url": "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/",
+  "documentation": "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/local-management/as-a-service/docker/",
+  "source": "https://github.com/cloudflare/cloudflared"
+}

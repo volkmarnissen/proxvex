@@ -54,14 +54,18 @@ $ROUTER_SSH "uci export uhttpd; echo '---FIREWALL---'; uci export firewall; echo
 echo "  Router backup saved: $BACKUP_DIR/router-kg-backup-${TS}.tar.gz"
 echo "  UCI dump saved:      $BACKUP_DIR/router-kg-uci-${TS}.txt"
 
-echo "=== Removing dns.sh entries from ${ROUTER_HOST} (marker: managed='prod-setup') ==="
+echo "=== Removing dns.sh DNS entries from ${ROUTER_HOST} (marker: managed='prod-setup') ==="
+# Firewall/NAT is no longer managed via UCI (it lives as static nftables includes
+# in the repo — openwrt/nftables.d/, applied manually). Those static rules are
+# infrastructure config and are intentionally NOT removed here; only the DNS
+# entries that dns.sh adds (tagged managed='prod-setup') are purged.
 $ROUTER_SSH '
   set -e
   TAG="prod-setup"
 
   purge() {
-    cfg="$1"  # dhcp or firewall
-    svc="$2"  # dnsmasq or firewall
+    cfg="$1"  # dhcp
+    svc="$2"  # dnsmasq
     sections=$(uci show "$cfg" 2>/dev/null | grep "\.managed='"'"'$TAG'"'"'$" | cut -d. -f1-2 | sort -u)
     if [ -z "$sections" ]; then
       echo "  $cfg: no tagged entries found."
@@ -74,8 +78,7 @@ $ROUTER_SSH '
     /etc/init.d/"$svc" restart
   }
 
-  purge dhcp     dnsmasq
-  purge firewall firewall
+  purge dhcp dnsmasq
 ' || {
   echo "ERROR: router cleanup failed — aborting before PVE destruction." >&2
   exit 1

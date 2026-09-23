@@ -1,0 +1,82 @@
+[
+  {
+    "id": "tab-messdaten",
+    "type": "tab",
+    "label": "Messdaten -> Postgres",
+    "disabled": false,
+    "info": "MQTT-Messdaten ueber mTLS in die Postgres-DB 'messdaten' schreiben.\n\nVoraussetzungen:\n- node-red-contrib-postgresql via Palette installiert\n- settings.js: functionGlobalContext stellt 'pgSsl' bereit (siehe README)\n- MQTT-Broker-Config 'mqtt-broker-mosquitto' existiert bereits (aus dem MQTT-Bridge-Flow)\n\nDie Verbindung kommt aus msg.pgConfig (mTLS), NICHT aus dem postgreSQLConfig-Node.\nDer Config-Node ist nur ein Platzhalter, damit der postgresql-Node valide ist."
+  },
+  {
+    "id": "pg-messdaten-cfg",
+    "type": "postgreSQLConfig",
+    "name": "messdaten (Platzhalter)",
+    "host": "postgres",
+    "port": "5432",
+    "database": "messdaten",
+    "ssl": false,
+    "user": "node-red",
+    "max": 10,
+    "idle": 1000,
+    "connectionTimeout": 10000
+  },
+  {
+    "id": "messdaten-mqtt-in",
+    "type": "mqtt in",
+    "z": "tab-messdaten",
+    "name": "Messdaten-Topic",
+    "topic": "modbus2mqtt/#",
+    "qos": "1",
+    "datatype": "auto-detect",
+    "broker": "mqtt-broker-mosquitto",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 120,
+    "wires": [["messdaten-build"]]
+  },
+  {
+    "id": "messdaten-build",
+    "type": "function",
+    "z": "tab-messdaten",
+    "name": "Topic/Payload -> pgConfig + params",
+    "func": "// mTLS-Verbindung aus settings.js (functionGlobalContext.pgSsl)\nconst ssl = global.get('pgSsl');\nif (!ssl) {\n    node.error('pgSsl fehlt - functionGlobalContext in settings.js setzen (siehe README)', msg);\n    return null;\n}\n\nmsg.pgConfig = {\n    host: 'postgres',      // <-- Postgres-Hostname anpassen (muss zum Server-Cert passen)\n    port: 5432,\n    database: 'messdaten',\n    user: 'node-red',      // == CN des Client-Certs\n    ssl                    // { ca, cert, key, rejectUnauthorized }\n};\n\n// --- Topic/Payload -> Messwert: AN DAS REALE modbus2mqtt-FORMAT ANPASSEN ---\n// Annahme hier: zaehlernummer = letztes Topic-Segment, payload = Zahl ODER\n// { value|wert, ts|timestamp }.\nconst parts = String(msg.topic || '').split('/');\nconst zaehlernummer = parts[parts.length - 1];\n\nlet wert, ts;\nif (msg.payload && typeof msg.payload === 'object') {\n    wert = Number(msg.payload.value ?? msg.payload.wert);\n    ts = msg.payload.ts || msg.payload.timestamp;\n} else {\n    wert = Number(msg.payload);\n}\nconst gemessenAm = ts ? new Date(ts).toISOString() : new Date().toISOString();\n\nif (!zaehlernummer || Number.isNaN(wert)) {\n    node.warn('verworfen: zaehlernummer/wert ungueltig (topic=' + msg.topic + ')');\n    return null;\n}\n\nmsg.params = [zaehlernummer, gemessenAm, wert];\nreturn msg;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 430,
+    "y": 120,
+    "wires": [["messdaten-insert"]]
+  },
+  {
+    "id": "messdaten-insert",
+    "type": "postgresql",
+    "z": "tab-messdaten",
+    "name": "INSERT messung",
+    "query": "INSERT INTO messung (zaehler_id, gemessen_am, wert, quelle)\nSELECT z.id, $2::timestamptz, $3::numeric, 'node-red'\nFROM zaehler z\nWHERE z.zaehlernummer = $1\n  AND ($2::timestamptz)::date BETWEEN z.gueltig_von AND COALESCE(z.gueltig_bis, 'infinity')\nON CONFLICT (zaehler_id, gemessen_am) DO NOTHING;",
+    "postgreSQLConfig": "pg-messdaten-cfg",
+    "split": false,
+    "rowsPerMsg": 1,
+    "outputs": 1,
+    "x": 720,
+    "y": 120,
+    "wires": [["messdaten-done"]]
+  },
+  {
+    "id": "messdaten-done",
+    "type": "debug",
+    "z": "tab-messdaten",
+    "name": "insert result",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "x": 950,
+    "y": 120,
+    "wires": []
+  }
+]

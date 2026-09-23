@@ -651,6 +651,7 @@ export class WebAppVeRouteHandlers {
             30_000,
             outerRestartKey,
             cloneStackIds,
+            body.disabledAddons,
           );
           emitStage(5, `Upgrade task dispatched to clone (clone-side restartKey=${result.restartKey}); mirroring clone messages from now on`);
           // E.8: outer key IS the unified key. The Hub forwarded it to

@@ -3,10 +3,13 @@
   "task": "installation",
   "params": [
     { "name": "vm_id_start", "value": 600 },
+    { "name": "oci_image_tag", "value": "latest" },
     { "name": "upload_modbus2mqtt_config_content", "value": "file:modbus2mqtt-config.yaml" },
     { "name": "mtls_cns", "value": "modbus2mqtt" },
     { "name": "oidc_redirect_uri", "value": "https://modbus2mqtt:3443/api/auth/callback" },
-    { "name": "oidc_post_logout_uri", "value": "https://modbus2mqtt:3443/" }
+    { "name": "oidc_post_logout_uri", "value": "https://modbus2mqtt:3443/" },
+    { "name": "host_device_path", "value": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" },
+    { "name": "install_replug_watcher", "value": "true" }
   ],
   "selectedAddons": ["addon-oidc", "addon-ssl", "addon-mtls"],
   "stackIds": ["oidc_production"]

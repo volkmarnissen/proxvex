@@ -21,4 +21,4 @@ sed -i '/^lxc\.environment: GITEA__server__CERT_FILE=/d' "$CONF_FILE"
 sed -i '/^lxc\.environment: GITEA__server__KEY_FILE=/d' "$CONF_FILE"
 
 echo "Gitea HTTPS env vars removed, reverting to HTTP" >&2
-echo '[{"id":"ssl_app_disabled","value":"true"}]'
+echo '[{"id":"ssl_app_disabled","value":"true"},{"id":"pg_mtls_disabled","value":"false"}]'

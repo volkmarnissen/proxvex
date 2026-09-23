@@ -1,0 +1,41 @@
+{
+  "name": "ESPHome",
+  "description": "Dashboard to create, configure and flash firmware for ESP8266/ESP32 and other microcontrollers via YAML. Runs as an LXC container on Proxmox; flash new devices over USB by mapping a serial port, then maintain them over-the-air.",
+  "extends": "oci-image",
+  "icon": "icon.png",
+  "tags": ["automation", "iot"],
+  "supported_addons": [],
+  "properties": [
+    { "id": "hostname", "default": "esphome" },
+    { "id": "disk_size", "default": "4" },
+    { "id": "volumes", "default": "config=/config,size=4G" },
+    { "id": "envs", "default": "TZ=Europe/Berlin" },
+    { "id": "rootfs_storage", "default": "local-zfs" },
+    { "id": "volume_storage", "default": "local-zfs", "required": true },
+    { "id": "oci_image", "value": "ghcr.io/esphome/esphome:{{oci_image_tag}}" },
+    { "id": "wait_for_network", "value": "true" },
+    { "id": "uid", "value": "0" },
+    { "id": "gid", "value": "0" },
+    { "id": "username", "value": "root" },
+    { "id": "http_port", "value": "6052" },
+    { "id": "volume_backup", "value": "true" }
+  ],
+  "installation": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "upgrade": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "reconfigure": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "url": "https://esphome.io/",
+  "documentation": "https://esphome.io/guides/getting_started_command_line.html",
+  "source": "https://github.com/esphome/esphome"
+}

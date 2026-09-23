@@ -914,7 +914,7 @@ export class CertificateManagementDialog implements OnInit {
     this.configService.getCaInfo().subscribe({
       next: (info) => {
         this.caInfo.set(info);
-        if (info.project_domain_suffix) {
+        if (info.project_domain_suffix !== undefined && info.project_domain_suffix !== null) {
           this.projectDomainSuffix.set(info.project_domain_suffix);
         }
         this.loadingCa.set(false);
@@ -1129,7 +1129,8 @@ export class CertificateManagementDialog implements OnInit {
 
   saveDomainSuffix(): void {
     const suffix = this.projectDomainSuffix();
-    if (!suffix) return;
+    // An empty suffix is valid and means "bare names" (cert CN = hostname).
+    if (suffix === null || suffix === undefined) return;
     this.configService.postDomainSuffix(suffix).subscribe({
       error: (err) => this.errorHandler.handleError('Failed to save domain suffix', err)
     });

@@ -135,4 +135,29 @@ describe("WebApp Installations API", () => {
     const jsonFilesAfter = listFilesRecursive(env.jsonDir);
     expect(jsonFilesAfter).toEqual(jsonFilesBefore);
   });
+
+  describe("POST installations/destroy validation", () => {
+    const destroyUrl = ApiUri.InstallationsDestroy.replace(
+      ":veContext",
+      veContextKey,
+    );
+
+    it("returns 404 for an unknown veContext", async () => {
+      const url = ApiUri.InstallationsDestroy.replace(":veContext", "ve_nope");
+      const res = await request(app).post(url).send({ vmIds: [101] });
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 400 when vmIds is not an array", async () => {
+      const res = await request(app).post(destroyUrl).send({ vmIds: 101 });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 400 when no valid vmIds remain after filtering", async () => {
+      const res = await request(app)
+        .post(destroyUrl)
+        .send({ vmIds: [0, -1, "x"] });
+      expect(res.status).toBe(400);
+    });
+  });
 });

@@ -14,6 +14,10 @@
       "value": "ghcr.io/proxvex/debian-docker:latest"
     },
     {
+      "id": "base_volumes",
+      "value": "proxvex=/etc/proxvex,0755,0:0"
+    },
+    {
       "id": "oidc_redirect_uri",
       "default": "https://{{hostname}}{{project_domain_suffix}}/api/auth/callback"
     },
@@ -46,7 +50,11 @@
       },
       "121-conf-mount-zfs-pool-on-host.json",
       "185-host-resolve-dependency-hosts.json",
-      "108-host-push-ca-to-container.json"
+      "108-host-push-ca-to-container.json",
+      "164-conf-write-on-start-dispatcher.json",
+      "165-conf-register-hookscript.json",
+      "167-conf-write-dockerd-on-start.json",
+      "168-conf-write-dockerd-on-stop.json"
     ],
     "pre_start_finalize": [
       "100-conf-unmount-volumes.json"
@@ -90,6 +98,10 @@
       "121-conf-mount-zfs-pool-on-host.json",
       "185-host-resolve-dependency-hosts.json",
       "108-host-push-ca-to-container.json",
+      "164-conf-write-on-start-dispatcher.json",
+      "165-conf-register-hookscript.json",
+      "167-conf-write-dockerd-on-start.json",
+      "168-conf-write-dockerd-on-stop.json",
       "191-host-write-docker-compose-notes.json"
     ],
     "pre_start_finalize": [

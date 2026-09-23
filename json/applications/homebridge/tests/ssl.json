@@ -1,0 +1,13 @@
+{
+  "selectedAddons": [
+    "addon-ssl"
+  ],
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "wait_seconds": 60,
+  "description": "Install Homebridge with native HTTPS (addon-ssl). conf-enable-ssl-app.sh generates config.json with an ssl block pointing at the managed server cert (/ssl/fullchain.pem + /ssl/privkey.pem); Config UI X serves TLS on port 8581."
+}

@@ -103,8 +103,17 @@
     "post_start": [
       "325-conf-check-zitadel-state-consistency.json",
       "340-post-setup-deployer-in-zitadel.json",
+      "341-post-set-login-policy.json",
       "385-post-configure-mail-dns.json",
       "380-post-show-admin-credentials.json"
+    ]
+  },
+  "reconfigure": {
+    "pre_start": [
+      "154-conf-read-zitadel-externaldomain.json"
+    ],
+    "post_start": [
+      "341-post-set-login-policy.json"
     ]
   },
   "stacktype": [

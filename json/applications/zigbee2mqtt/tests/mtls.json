@@ -1,0 +1,17 @@
+{
+  "selectedAddons": [
+    "addon-ssl",
+    "addon-mtls"
+  ],
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "depends_on": [
+    "eclipse-mosquitto/ssl"
+  ],
+  "wait_seconds": 60,
+  "description": "Install zigbee2mqtt with native HTTPS plus mTLS for the MQTT client. addon-mtls issues a client cert (CN = hostname) into /ssl/mtls/<hostname>/, wired into the MQTT connection via ZIGBEE2MQTT_CONFIG_MQTT_CA/CERT/KEY so it can reach eclipse-mosquitto on 8883."
+}

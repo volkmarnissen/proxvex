@@ -162,6 +162,47 @@ if [ "$CONTAINER_STATUS" = "running" ]; then
   exit 0
 fi
 
+# ─── Static-IP reconfigure: stop OLD before starting NEW ──────────────────────
+# A reconfigure/upgrade clones OLD into NEW; the clone inherits OLD's static
+# IP + MAC. Starting NEW while OLD is still running puts the same IP/MAC on the
+# bridge twice → FDB flapping, and anything in NEW that needs the network on
+# startup fails intermittently: a docker-compose app can't resolve its DB
+# ("server misbehaving"), a cloudflared tunnel can't reach the edge. Unlike
+# the self-upgrade fast-path above we do NOT switchover-skip the remaining
+# steps — post_start (docker-compose up) must still run on NEW and replace_ct
+# then destroys the already-stopped OLD. We only need OLD off the wire first.
+#
+# Scope: static ip= only. DHCP clones get a fresh lease and never collide, so
+# `ip=dhcp` (NEW_IP stays empty) leaves this untouched and the old behaviour
+# (OLD keeps running through the phases) is preserved — which is what the
+# livetest suite exercises. STOPPED_PREV is checked in the failure paths below
+# to roll OLD back if NEW never comes up.
+STOPPED_PREV=""
+if [ -n "$PREV_VMID" ] && [ "$PREV_VMID" != "NOT_DEFINED" ] && [ "$PREV_VMID" != "$VMID" ]; then
+  NEW_IP=$(pct config "$VMID" 2>/dev/null | grep -aoE 'ip=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  OLD_IP=$(pct config "$PREV_VMID" 2>/dev/null | grep -aoE 'ip=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  OLD_STATUS=$(pct status "$PREV_VMID" 2>/dev/null | awk '{print $2}')
+  if [ -n "$NEW_IP" ] && [ "$NEW_IP" = "$OLD_IP" ] && [ "$OLD_STATUS" = "running" ]; then
+    echo "Static-IP reconfigure: OLD $PREV_VMID and NEW $VMID both use $NEW_IP — stopping OLD before starting NEW" >&2
+    # onboot=0 so a host reboot mid-reconfigure can't bring OLD back onto NEW's IP.
+    pct set "$PREV_VMID" --onboot 0 >&2 2>/dev/null || true
+    if pct shutdown "$PREV_VMID" --timeout 60 --forceStop 1 >&2 2>&1 || pct stop "$PREV_VMID" >&2 2>&1; then
+      STOPPED_PREV="$PREV_VMID"
+      echo "OLD $PREV_VMID stopped" >&2
+    else
+      echo "Warning: could not stop OLD $PREV_VMID — continuing, IP collision may persist" >&2
+    fi
+  fi
+fi
+
+# Roll OLD back onto the wire when NEW never comes up (only if we stopped it).
+rollback_prev() {
+  [ -z "$STOPPED_PREV" ] && return 0
+  echo "Rollback: restarting OLD $STOPPED_PREV after NEW $VMID failed to come up" >&2
+  pct start "$STOPPED_PREV" >&2 2>&1 || echo "Warning: rollback pct start $STOPPED_PREV failed — service is down, start it manually" >&2
+  pct set "$STOPPED_PREV" --onboot 1 >&2 2>/dev/null || true
+}
+
 # Truncate LXC console log before start (ensures clean hookscript markers)
 HOSTNAME_FOR_LOG=$(pct config "$VMID" 2>/dev/null | awk '/^hostname:/{print $2}')
 if [ -n "$HOSTNAME_FOR_LOG" ]; then
@@ -173,6 +214,7 @@ fi
 echo "Attempting to start container $VMID..." >&2
 if ! pct start "$VMID" >/dev/null 2>&1; then
   START_ERROR=$(pct start "$VMID" 2>&1)
+  rollback_prev
   echo "" >&2
   echo "=== Container $VMID failed to start ===" >&2
   echo "$START_ERROR" >&2
@@ -198,6 +240,7 @@ sleep 3
 POST_STATUS=$(pct status "$VMID" 2>/dev/null | grep -o "status: [a-z]*" | cut -d' ' -f2 || echo "unknown")
 
 if [ "$POST_STATUS" != "running" ]; then
+  rollback_prev
   echo "" >&2
   echo "=== Container $VMID started but exited immediately ===" >&2
   echo "The application inside the container crashed on startup." >&2

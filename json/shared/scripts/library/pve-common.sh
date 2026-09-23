@@ -13,6 +13,7 @@
 #   6. pve_effective_gid - Compute effective host GID for a container GID
 #   7. pve_find_next_mp - Find next free mpX mount point slot
 #   8. pve_merge_addon_volumes - Merge addon volumes with base volumes
+#   9. pve_write_on_start_dispatcher - Write the on_start_container dispatcher
 
 # Check if a string is a non-negative integer
 pve_is_number() {
@@ -150,4 +151,53 @@ $_pve_aline" ;;
   done
   IFS="$_pve_IFS"
   printf '%s' "$_pve_vols"
+}
+
+# Write the on_start_container dispatcher plus its on_start.d directory.
+#
+# The dispatcher is generic: Proxmox invokes it on container start and it runs
+# every executable drop-in in on_start.d/. Which drop-ins exist is decided by
+# the callers — addons (ssl-proxy.sh, acme-renew.sh, smbd.sh) and the
+# docker-compose hooks (50-start-dockerd.sh) — so the dispatcher itself must
+# not depend on any addon parameter.
+#
+# Args: $1=volume dir (host-side proxvex volume), $2=owner as "uid:gid"
+# Overwrites an existing dispatcher; safe to call repeatedly.
+pve_write_on_start_dispatcher() {
+  _pve_voldir="$1"; _pve_owner="${2:-0:0}"
+
+  mkdir -p "${_pve_voldir}/on_start.d"
+  chown "$_pve_owner" "${_pve_voldir}/on_start.d" 2>/dev/null || true
+
+  cat > "${_pve_voldir}/on_start_container" << 'DISPEOF'
+#!/bin/sh
+# on_start_container - runs all drop-in scripts on container start
+# Called by Proxmox hookscript via: pct exec <CTID> -- /etc/proxvex/on_start_container [UID] [GID]
+
+APP_UID="${1:-0}"
+APP_GID="${2:-0}"
+DROPIN_DIR="/etc/proxvex/on_start.d"
+
+echo "===OCI_HOOK_START===" >&2
+HOOK_FAILED=0
+
+for script in "$DROPIN_DIR"/*.sh; do
+  [ -x "$script" ] || continue
+  echo "Running: $script" >&2
+  "$script" "$APP_UID" "$APP_GID"
+  RC=$?
+  if [ $RC -ne 0 ]; then
+    echo "  Script $script failed with exit code $RC" >&2
+    HOOK_FAILED=1
+  fi
+done
+
+if [ "$HOOK_FAILED" -eq 0 ]; then
+  echo "===OCI_HOOK_SUCCESS===" >&2
+else
+  echo "===OCI_HOOK_ERROR===" >&2
+fi
+DISPEOF
+  chmod 755 "${_pve_voldir}/on_start_container"
+  chown "$_pve_owner" "${_pve_voldir}/on_start_container" 2>/dev/null || true
 }

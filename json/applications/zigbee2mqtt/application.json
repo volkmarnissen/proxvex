@@ -1,0 +1,45 @@
+{
+  "name": "Zigbee2MQTT",
+  "description": "Bridge that exposes Zigbee devices over MQTT with Home Assistant auto-discovery. Talks to a Zigbee coordinator on a serial/USB port and runs as an LXC container on Proxmox with optional native HTTPS and mTLS for the MQTT connection.",
+  "extends": "oci-image",
+  "icon": "icon.png",
+  "tags": ["automation", "iot"],
+  "supported_addons": ["addon-ssl", "addon-mtls"],
+  "properties": [
+    { "id": "hostname", "default": "zigbee2mqtt" },
+    { "id": "volumes", "default": "data=/app/data,size=512M\ncerts=/ssl" },
+    { "id": "envs", "default": "TZ=Europe/Berlin" },
+    { "id": "rootfs_storage", "default": "local-zfs" },
+    { "id": "volume_storage", "default": "local-zfs", "required": true },
+    { "id": "oci_image", "value": "ghcr.io/koenkk/zigbee2mqtt:{{oci_image_tag}}" },
+    { "id": "wait_for_network", "value": "true" },
+    { "id": "uid", "value": "1000" },
+    { "id": "gid", "value": "1000" },
+    { "id": "username", "value": "root" },
+    { "id": "http_port", "value": "8080" },
+    { "id": "local_https_port", "value": "8080" },
+    { "id": "volume_backup", "value": "true" },
+    { "id": "ssl_mode", "value": "native" },
+    { "id": "ssl.needs_server_cert", "value": "true" },
+    { "id": "ssl.needs_ca_cert", "value": "true" },
+    { "id": "mtls.check_file_paths", "value": "/ssl/mtls/{{ hostname }}/cert.pem" }
+  ],
+  "installation": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "upgrade": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "reconfigure": {
+    "pre_start": [
+      "110-conf-map-serial.json"
+    ]
+  },
+  "url": "https://www.zigbee2mqtt.io/",
+  "documentation": "https://www.zigbee2mqtt.io/guide/getting-started/",
+  "source": "https://github.com/Koenkk/zigbee2mqtt"
+}

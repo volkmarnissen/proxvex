@@ -34,7 +34,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # --- Configuration ---
 PVE_HOST="pve1.cluster"
 DEPLOYER_HOST="${DEPLOYER_HOST:-proxvex}"
-PROJECT_DOMAIN_SUFFIX="${PROJECT_DOMAIN_SUFFIX:-.ohnewarum.de}"
+# Internal CA domain suffix for LXC service certs. Empty = bare names
+# (cert CN = hostname, e.g. "eclipse-mosquitto"), which is what cluster DNS
+# resolves. Override with e.g. PROJECT_DOMAIN_SUFFIX=.example.com if needed.
+PROJECT_DOMAIN_SUFFIX="${PROJECT_DOMAIN_SUFFIX-}"
 # Auto-detect: HTTPS (port 3443) or HTTP (port 3080)
 if curl -sk --connect-timeout 3 "https://${DEPLOYER_HOST}:3443/api/applications" >/dev/null 2>&1; then
   DEPLOYER_API="https://${DEPLOYER_HOST}:3443"

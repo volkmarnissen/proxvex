@@ -285,8 +285,12 @@ echo '[{"id":"started","value":"true"}]'
 export async function waitForCloneApi(
   cloneIp: string,
   port = 3080,
-  timeoutMs = 90_000,
+  timeoutMs = 300_000,
 ): Promise<{ version: string; gitHash?: string }> {
+  // 90s was too tight: under a parallel `/livetest --all` the host is busy
+  // installing other LXCs (zfs send/recv contention) and the clone-deployer
+  // takes 2–3 min to come up cold. 300s covers that worst case while still
+  // failing fast on a truly stuck clone.
   const start = Date.now();
   let lastError = "";
   while (Date.now() - start < timeoutMs) {
@@ -336,6 +340,7 @@ export async function triggerUpgradeViaClone(
   timeoutMs = 30_000,
   outerRestartKey?: string,
   stackIds?: string[],
+  disabledAddons?: string[],
 ): Promise<{ restartKey: string; cloneStatus: number }> {
   // Ensure the clone has the source's VE context configured. The clone
   // is a `pct clone` of the source CT, which carries over /config/
@@ -366,12 +371,21 @@ export async function triggerUpgradeViaClone(
     task,
     params: paramsWithPrev,
     selectedAddons,
-    // Stack ids resolved on the Hub (which owns the addon stack registry).
-    // The clone's registry is a copy of the pre-OIDC source, so it cannot
-    // re-derive oidc_* stacks itself — it seeds allStackIds from this instead,
-    // letting 185-host-resolve-dependency-hosts find the dependency container.
-    ...(stackIds && stackIds.length > 0 ? { stackIds } : {}),
+    // Forward disabledAddons — the disable-reconfigure flow on the Hub-side
+    // sets this to instruct the Clone-side pipeline to STRIP addon-ssl +
+    // addon-oidc (or whichever addons the user is turning off). Without
+    // forwarding, the Clone re-derives addons from selectedAddons only and the
+    // disable scenario produces a new CT that still carries SSL+OIDC — visibly
+    // indistinguishable from a no-op upgrade.
+    ...(disabledAddons && disabledAddons.length > 0 ? { disabledAddons } : {}),
     [ORCHESTRATED_FLAG]: true,
+    // Forward the resolved stack ids from the Hub-side request. The Hub owns
+    // the addon stack registry; the clone's registry is a copy of the pre-OIDC
+    // source and cannot re-derive oidc_* stacks itself, so the Clone's
+    // reconfigure pipeline seeds allStackIds from this — otherwise
+    // 185-host-resolve-dependency-hosts fails with "Dependencies require a
+    // stack_name but none is set" and depended-on apps resolve to NOT_DEFINED.
+    ...(stackIds && stackIds.length > 0 ? { stackIds } : {}),
     // E.8: Hub forwards its outer restartKey to the Clone. The Clone's
     // route handler picks this up and forces setupExecution to use it
     // instead of generating a new one — so the Clone's whole reconfigure
@@ -384,7 +398,7 @@ export async function triggerUpgradeViaClone(
   // Route shape: /api/:veContext/ve-configuration/:application (see
   // ApiUri.VeConfiguration in types.mts).
   const url = `http://${cloneIp}:${port}/api/${encodeURIComponent(veContextKey)}/ve-configuration/${encodeURIComponent(application)}`;
-  logger.info("Triggering clone-side upgrade", { url, task, previousVmid, selectedAddons, outerRestartKey });
+  logger.info("Triggering clone-side upgrade", { url, task, previousVmid, selectedAddons, disabledAddons, outerRestartKey });
   const response = await httpPostJson<{ restartKey?: string }>(url, body, timeoutMs);
   if (!response.body?.restartKey) {
     throw new Error(

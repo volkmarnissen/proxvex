@@ -88,17 +88,27 @@ def error(message: str, exit_code: int = 1) -> None:
     sys.exit(exit_code)
 
 def check_skopeo() -> bool:
-    """Check if skopeo is available."""
-    try:
-        result = subprocess.run(['which', 'skopeo'], capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            # Verify it's actually skopeo
-            version_result = subprocess.run(['skopeo', '--version'], capture_output=True, text=True, timeout=5)
-            if version_result.returncode == 0:
+    """Check if skopeo is available.
+
+    Retried with a generous timeout: when several installs start at once the
+    VE host can stall for seconds on the first exec, and a slow probe must not
+    be reported as a missing package. A genuinely absent binary still fails
+    immediately via FileNotFoundError.
+    """
+    for attempt in (1, 2):
+        try:
+            result = subprocess.run(
+                ['skopeo', '--version'], capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
                 return True
-        return False
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+            log(f"skopeo --version exited {result.returncode}: {result.stderr.strip()}")
+            return False
+        except subprocess.TimeoutExpired:
+            log(f"skopeo --version timed out after 60s (attempt {attempt}/2) — VE host busy")
+        except FileNotFoundError:
+            return False
+    return False
 
 def parse_image_ref(oci_image: str) -> str:
     """

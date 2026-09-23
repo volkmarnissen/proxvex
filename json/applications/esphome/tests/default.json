@@ -1,0 +1,10 @@
+{
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "wait_seconds": 45,
+  "description": "Install ESPHome without addons (plain HTTP dashboard on 6052). No serial device mapped; smoke test that the container starts and the dashboard comes up."
+}

@@ -112,6 +112,16 @@ export class WebAppVeMessageManager {
       };
       this.messages.push(existing);
     }
+    // Arm the retention sweep. cleanupOldMessages() evicts by this map, but
+    // nothing in the normal execution flow ever wrote to it (only
+    // injectMessages/clearMessagesForApplication did) — so groups from
+    // ordinary runs were retained forever and a long livetest --all grew the
+    // deployer's heap until the 512MB CT thrashed swap and multi-minute poll
+    // responses looked like a hung Hub. handleExecutionMessage routes every
+    // frame (partial, final, new) through here, so an alive task refreshes
+    // its key continuously and only (app, task) keys idle for the full
+    // retention window are swept.
+    this.messageTimestamps.set(`${application}/${task}`, Date.now());
     return existing;
   }
 

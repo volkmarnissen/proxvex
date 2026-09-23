@@ -89,40 +89,9 @@ _pkg_unlock() { _h=$(cat "$_PKG_LOCK" 2>/dev/null || true); [ "$_h" = "$$" ] && 
 VOL_OWNER=$(stat -c '%u:%g' "$VOLUME_DIR" 2>/dev/null || echo "0:0")
 
 # --- 1. Write on_start_container dispatcher ---
-mkdir -p "${VOLUME_DIR}/on_start.d"
-chown "$VOL_OWNER" "${VOLUME_DIR}/on_start.d" 2>/dev/null || true
-
-cat > "${VOLUME_DIR}/on_start_container" << 'DISPEOF'
-#!/bin/sh
-# on_start_container - runs all drop-in scripts on container start
-# Called by Proxmox hookscript via: pct exec <CTID> -- /etc/proxvex/on_start_container [UID] [GID]
-
-APP_UID="${1:-0}"
-APP_GID="${2:-0}"
-DROPIN_DIR="/etc/proxvex/on_start.d"
-
-echo "===OCI_HOOK_START===" >&2
-HOOK_FAILED=0
-
-for script in "$DROPIN_DIR"/*.sh; do
-  [ -x "$script" ] || continue
-  echo "Running: $script" >&2
-  "$script" "$APP_UID" "$APP_GID"
-  RC=$?
-  if [ $RC -ne 0 ]; then
-    echo "  Script $script failed with exit code $RC" >&2
-    HOOK_FAILED=1
-  fi
-done
-
-if [ "$HOOK_FAILED" -eq 0 ]; then
-  echo "===OCI_HOOK_SUCCESS===" >&2
-else
-  echo "===OCI_HOOK_ERROR===" >&2
-fi
-DISPEOF
-chmod 755 "${VOLUME_DIR}/on_start_container"
-chown "$VOL_OWNER" "${VOLUME_DIR}/on_start_container" 2>/dev/null || true
+# Shared with 164-conf-write-on-start-dispatcher, which docker-compose
+# applications use to get the dispatcher without this template's addon parts.
+pve_write_on_start_dispatcher "$VOLUME_DIR" "$VOL_OWNER"
 log "Wrote dispatcher: ${VOLUME_DIR}/on_start_container"
 SCRIPTS_WRITTEN=$((SCRIPTS_WRITTEN + 1))
 

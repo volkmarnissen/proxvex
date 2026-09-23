@@ -1,0 +1,10 @@
+{
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "wait_seconds": 60,
+  "description": "Install Homebridge without addons (plain HTTP Config UI X on 8581). Smoke test that the container starts and the web interface comes up."
+}

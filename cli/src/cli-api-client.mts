@@ -158,6 +158,33 @@ export class CliApiClient {
     }
   }
 
+  /** Returns the current base URL (for poll-loop fallback detection). */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /** Hot-swap the base URL while a polling loop is mid-run.
+   *
+   * Used by CliProgress to fail over from the pre-self-upgrade endpoint
+   * (e.g. http://ubuntupve:1280) to the post-replace endpoint
+   * (https://ubuntupve:1643) when the original Hub-LXC dies during a
+   * self-reconfigure-enable-https-oidc scenario. The new URL comes from
+   * the `endpoint_url` output emitted by template
+   * 351-post-emit-endpoint-config, which runs in post_start (BEFORE the
+   * replace_ct phase) so the CLI receives it through the still-alive
+   * Hub before the polling URL itself goes dark. */
+  setBaseUrl(newUrl: string): void {
+    this.baseUrl = newUrl.replace(/\/+$/, "");
+  }
+
+  /** Clear the cached bearer so the next request re-mints via
+   *  authenticateOidc(). Use when an endpoint shift moves us from
+   *  unauthenticated HTTP to OIDC-required HTTPS — the existing token
+   *  may have been minted lazily-or-not-at-all under the old endpoint. */
+  resetToken(): void {
+    this.token = undefined;
+  }
+
   /**
    * Fetch a JWT via OIDC Client Credentials Grant.
    * Called once before the first API request if oidcCredentials are set.
@@ -210,6 +237,7 @@ export class CliApiClient {
     method: string,
     path: string,
     body?: unknown,
+    timeoutMs?: number,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = {};
@@ -234,6 +262,9 @@ export class CliApiClient {
     const fetchOptions: RequestInit = { method, headers, redirect: "manual" };
     if (body !== undefined) {
       fetchOptions.body = JSON.stringify(body);
+    }
+    if (timeoutMs !== undefined) {
+      fetchOptions.signal = AbortSignal.timeout(timeoutMs);
     }
 
     let response: Response;
@@ -434,7 +465,12 @@ export class CliApiClient {
     if (since !== undefined) parts.push(`since=${since}`);
     if (restartKey) parts.push(`restartKey=${encodeURIComponent(restartKey)}`);
     const query = parts.length > 0 ? `?${parts.join("&")}` : "";
-    return this.request("GET", `/api/${veCtx}/ve/execute${query}`);
+    // 30s cap: this endpoint is polled in a loop, and a Hub whose event loop
+    // stalls (seen with a swap-thrashing deployer CT) otherwise hangs a
+    // single poll for minutes — silently eating the CLI's whole execution
+    // budget without producing a heartbeat or a retry. A timeout turns the
+    // stall into a normal retry the poll loop already knows how to handle.
+    return this.request("GET", `/api/${veCtx}/ve/execute${query}`, undefined, 30_000);
   }
 
   async getValidation(): Promise<{ valid: boolean; [key: string]: any }> {

@@ -620,6 +620,13 @@ export class VeConfigurationService {
     return this.post<ILockedCleanupResult, object>(ApiUri.LockedCleanupDestroy, {});
   }
 
+  // Bulk-destroy the given containers in the active VE context (used by the
+  // installations page to purge stopped/migrated debris). `post()` fills in the
+  // :veContext placeholder from the currently selected host.
+  destroyInstallations(vmIds: number[]): Observable<ILockedCleanupResult> {
+    return this.post<ILockedCleanupResult, { vmIds: number[] }>(ApiUri.InstallationsDestroy, { vmIds });
+  }
+
   checkDependencies(applicationId: string, addons?: string[], stackIds?: string[]): Observable<IDependencyCheckResponse> {
     let url = ApiUri.DependencyCheck.replace(':application', encodeURIComponent(applicationId));
     if (this.veContextKey) {

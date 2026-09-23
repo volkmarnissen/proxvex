@@ -1,0 +1,19 @@
+{
+  "execute_on": "ve",
+  "name": "Write On-Start Dispatcher",
+  "description": "Writes the on_start_container dispatcher into the proxvex volume. Proxmox invokes it on every container start and it runs all drop-ins in /etc/proxvex/on_start.d/. Addon-free counterpart of 166 for applications that need the dispatcher without addon hooks.",
+  "parameters": [
+    "hostname",
+    "vm_id"
+  ],
+  "commands": [
+    {
+      "script": "conf-write-on-start-dispatcher.sh",
+      "library": "pve-common.sh",
+      "description": "Write on_start_container dispatcher to host-side proxvex volume",
+      "outputs": [
+        "on_start_dispatcher_written"
+      ]
+    }
+  ]
+}

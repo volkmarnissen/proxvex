@@ -37,7 +37,9 @@ export class WebAppVeCertificateInjector {
     const hostnameRaw = processedParams.find((p) => p.id === "hostname")?.value;
     const hostname = typeof hostnameRaw === "string" && hostnameRaw.length > 0
       ? hostnameRaw : "localhost";
-    const projectDomainSuffix = (await caProvider.getDomainSuffix(veContextKey)) || ".local";
+    // ?? keeps an explicit empty suffix ("bare names"); getDomainSuffix already
+    // applies the .local fallback for an unset value.
+    const projectDomainSuffix = (await caProvider.getDomainSuffix(veContextKey)) ?? ".local";
     const fqdn = hostname.includes(".") ? hostname : `${hostname}${projectDomainSuffix}`;
 
     // Public CA cert — for trust store inside the container.

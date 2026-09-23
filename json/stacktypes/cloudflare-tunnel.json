@@ -1,0 +1,7 @@
+{
+  "name": "Cloudflare Tunnel",
+  "description": "Cloudflare Tunnel connector token for a remotely-managed tunnel (cloudflared). This is the base64-encoded JSON connector token from the Zero Trust dashboard or `cloudflared tunnel token <name>` — distinct from the cloudflare DNS API token (CF_TOKEN) used by addon-acme for the DNS-01 challenge.",
+  "variables": [
+    { "name": "TUNNEL_TOKEN", "external": true, "required": true }
+  ]
+}

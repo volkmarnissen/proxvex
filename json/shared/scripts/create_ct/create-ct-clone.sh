@@ -140,11 +140,23 @@ fi
 
 log "Cloning $SOURCE_VMID → $TARGET_VMID (snapshot $SNAPNAME, storage $ROOTFS_STORAGE, full)..."
 clone_ok=true
+# `pct clone --full` does zfs send | zfs recv for each mountpoint sync and
+# produces no intermediate stdout. For containers with multi-MB volumes
+# (compose-bundle apps with cached blobs in mp1) a single mountpoint can
+# exceed the livetest runner's 120s no-output watchdog. Run in background
+# and emit a stderr heartbeat every 30s so the watchdog sees we're alive.
 pct clone "$SOURCE_VMID" "$TARGET_VMID" \
   --snapname "$SNAPNAME" \
   --full \
-  --storage "$ROOTFS_STORAGE" >&2 \
-  || clone_ok=false
+  --storage "$ROOTFS_STORAGE" >&2 &
+_clone_pid=$!
+_clone_started=$(date +%s)
+while kill -0 "$_clone_pid" 2>/dev/null; do
+  sleep 30
+  kill -0 "$_clone_pid" 2>/dev/null || break
+  log "pct clone $SOURCE_VMID -> $TARGET_VMID: still running ($(($(date +%s) - _clone_started))s elapsed)"
+done
+wait "$_clone_pid" || clone_ok=false
 
 # With --full the target is independent of the snapshot, so we can drop it.
 pct delsnapshot "$SOURCE_VMID" "$SNAPNAME" >&2 \

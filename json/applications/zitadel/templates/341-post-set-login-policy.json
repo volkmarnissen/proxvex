@@ -1,0 +1,16 @@
+{
+  "name": "Set Zitadel Login Policy",
+  "description": "Sets the instance login policy to a known-good state: password login as fallback, passkey allowed, MFA enforced for local logins only, TOTP as the default second factor (mirrors heimvio-green/docker/iam/01_login_policy.sh). Without this a fresh Zitadel keeps whatever the FirstInstance default or an external iam migration left behind — in production that was allowUsernamePassword=false, which renders the login-v2 form with no fields and locks out every password user. Runs on both install and reconfigure using the ephemeral admin PAT (persistent /bootstrap/admin-client.pat, same source as 340).",
+  "execute_on": "lxc",
+  "parameters": [
+    "compose_project",
+    "ZITADEL_EXTERNALDOMAIN"
+  ],
+  "commands": [
+    {
+      "name": "Set Zitadel Login Policy",
+      "script": "post-set-login-policy.sh",
+      "library": "pkg-common.sh"
+    }
+  ]
+}

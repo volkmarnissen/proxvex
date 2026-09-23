@@ -20,7 +20,7 @@
 
 VMID="{{ vm_id }}"
 HOOK_PATH="/var/lib/vz/snippets/proxvex-hook.sh"
-NEW_VERSION=19
+NEW_VERSION=20
 
 # The hookscript body (everything below the header)
 HOOK_BODY='
@@ -53,6 +53,15 @@ case $phase in
     done
     if [ "$HAS_PERSISTENT" -eq 1 ]; then
       logger -t proxvex "WARNING: Container $vmid has persistent volumes. Use proxvex to destroy."
+    fi
+
+    # Run on_stop scripts synchronously before the container stops.
+    # Docker containers need to release listeners and shut down before the LXC
+    # itself stops; otherwise processes hang and dockerd is killed uncleanly.
+    # Only run if the dispatcher exists (backwards-compatible for containers without on_stop.d).
+    if [ -x /etc/proxvex/on_stop_container ]; then
+      logger -t proxvex "Running on_stop_container for $vmid"
+      timeout 30 pct exec "$vmid" -- /etc/proxvex/on_stop_container || true
     fi
     ;;
 esac

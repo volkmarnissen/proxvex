@@ -144,7 +144,17 @@ if [ "$source_status" = "running" ]; then
     *)       _src_stop_timeout=30 ;;
   esac
   log "Stopping old container $SOURCE_VMID (${_src_host:-?}, timeout ${_src_stop_timeout}s)..."
-  pct stop "$SOURCE_VMID" --timeout "$_src_stop_timeout" >&2 || log "Warning: failed to stop old container $SOURCE_VMID"
+  # `pct stop` does not accept --timeout on this PVE — it is the forceful path;
+  # only `pct shutdown` carries the timeout knob. Use `pct shutdown --timeout N
+  # --forceStop 1` (graceful, SIGKILL after the timeout) with bare `pct stop`
+  # as a last-resort fallback — the same pattern lxc-start.sh and
+  # host-stop-and-unlink-previous-deployer.sh already use. Without this the stop
+  # fails outright ("Unknown option: timeout"), the old container keeps running,
+  # and its ZFS datasets stay busy → the destroy below cannot remove them → they
+  # surface as orphan_unmounted in the volume-consistency check.
+  pct shutdown "$SOURCE_VMID" --timeout "$_src_stop_timeout" --forceStop 1 >&2 \
+    || pct stop "$SOURCE_VMID" >&2 \
+    || log "Warning: failed to stop old container $SOURCE_VMID"
 fi
 
 # Unlink all managed volumes and rename to clean names. The new container

@@ -343,7 +343,9 @@ export function registerCertificateRoutes(
       }
 
       const suffix = (req.body as any)?.project_domain_suffix;
-      if (typeof suffix !== "string" || suffix.length === 0) {
+      // An empty string is valid and means "bare names" (cert CN = hostname,
+      // no domain suffix). Only a missing/non-string value is rejected.
+      if (typeof suffix !== "string") {
         res.status(400).json({ error: "Missing or invalid project_domain_suffix" });
         return;
       }

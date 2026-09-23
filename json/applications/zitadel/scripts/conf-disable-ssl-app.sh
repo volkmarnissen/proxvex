@@ -25,4 +25,4 @@ if [ -n "$VM_ID" ] && [ "$VM_ID" != "NOT_DEFINED" ]; then
 fi
 
 echo "SSL disabled: using HTTP compose (no transformation needed)" >&2
-echo '[{"id":"ssl_app_disabled","value":"true"}]'
+echo '[{"id":"ssl_app_disabled","value":"true"},{"id":"pg_mtls_disabled","value":"false"}]'

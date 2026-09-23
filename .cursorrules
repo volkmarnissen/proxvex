@@ -142,4 +142,9 @@ After making significant changes to frontend or backend code:
   - Use descriptive test names that explain what is being tested
   - Follow the existing test patterns in the project
 
+## Plan Mode
+
+- In plan mode, prefer internal read-only tools (`Read`, `Glob`, `Grep`) over shell utilities like `grep`, `wc`, `sed`, `awk` to avoid unnecessary permission prompts.
+- Only use `Bash` when a task cannot be accomplished with the dedicated tools.
+
 

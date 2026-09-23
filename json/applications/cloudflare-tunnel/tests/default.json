@@ -1,0 +1,6 @@
+{
+  "requires_env": ["TUNNEL_TOKEN"],
+  "selectedAddons": ["addon-ssl"],
+  "wait_seconds": 45,
+  "description": "End-to-end smoke test for the cloudflared connector (docker-compose framework). Requires env var TUNNEL_TOKEN set to a real Cloudflare Tunnel connector token (base64 JSON from the Zero Trust dashboard / `cloudflared tunnel token <name>` — NOT a DNS API token). The livetest stack-manager injects process.env.TUNNEL_TOKEN into the freshly-created cloudflare-tunnel stack and binds it — exactly the production flow. addon-ssl is required: it provisions the internal CA chain (chain.pem) into the `certs` volume, which the compose mounts read-only at /etc/ssl/addon so cloudflared can use it as TUNNEL_ORIGIN_CA_POOL to validate internal HTTPS origins. Without the env var the runner drops the scenario (requires_env). With it set, the LXC boots Docker, `docker compose up` starts the cloudflared service with restart: unless-stopped, and the connector reaches the Cloudflare edge (the nested VM has NAT'd outbound internet). check-tunnel-connected asserts 'Registered tunnel connection' in the docker logs. NOTE: a stale cloudflare-tunnel_default stack from a prior run is reused (not refilled), so delete it first if you change the token."
+}

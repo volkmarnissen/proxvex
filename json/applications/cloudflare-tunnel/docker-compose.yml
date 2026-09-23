@@ -1,0 +1,16 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:${DOCKER_cloudflare_tunnel_TAG}
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel run
+    volumes:
+      # addon-ssl provisions the internal CA chain (chain.pem) into the `certs`
+      # volume; cloudflared uses it as origin-ca-pool to validate internal
+      # HTTPS origins (git/auth/ohnewarum.de) with TLS verification ON.
+      - certs:/etc/ssl/addon:ro
+    environment:
+      TUNNEL_TOKEN: "{{ TUNNEL_TOKEN }}"
+      TUNNEL_ORIGIN_CA_POOL: /etc/ssl/addon/chain.pem
+volumes:
+  certs:

@@ -1,0 +1,10 @@
+{
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "wait_seconds": 30,
+  "description": "Install zigbee2mqtt without addons (plain HTTP frontend on 8080). No serial device mapped and MQTT/adapter configured via the web onboarding wizard; smoke test that the container starts and the frontend comes up."
+}

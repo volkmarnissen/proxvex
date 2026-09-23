@@ -10,7 +10,7 @@
         "id": "mqtt-broker-mosquitto",
         "type": "mqtt-broker",
         "name": "eclipse-mosquitto (mTLS)",
-        "broker": "eclipse-mosquitto.local",
+        "broker": "eclipse-mosquitto",
         "port": "8883",
         "clientid": "node-red",
         "autoConnect": true,
@@ -30,7 +30,7 @@
         "certname": "",
         "keyname": "",
         "caname": "",
-        "servername": "eclipse-mosquitto.local",
+        "servername": "eclipse-mosquitto",
         "verifyservercert": true,
         "alpnprotocol": ""
     },

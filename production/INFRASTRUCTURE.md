@@ -176,10 +176,10 @@ graph LR
 | | Server Cert | Issued By | Addon | Renewal |
 |---|---|---|---|---|
 | **nginx** | `*.ohnewarum.de` | Let's Encrypt | `addon-acme` | acme.sh (60 days) |
-| **zitadel** | `zitadel.local` | Global CA | `addon-ssl` | deployer (daily) |
-| **gitea** | `gitea.local` | Global CA | `addon-ssl` | deployer (daily) |
-| **deployer** | `proxvex.local` | Global CA | `addon-ssl` | deployer (daily) |
-| **postgres** | `postgres.local` | Global CA | `addon-ssl` | deployer (daily) |
+| **zitadel** | `zitadel` | Global CA | `addon-ssl` | deployer (daily) |
+| **gitea** | `gitea` | Global CA | `addon-ssl` | deployer (daily) |
+| **deployer** | `proxvex` | Global CA | `addon-ssl` | deployer (daily) |
+| **postgres** | `postgres` | Global CA | `addon-ssl` | deployer (daily) |
 
 ## 4. OIDC Authentication
 

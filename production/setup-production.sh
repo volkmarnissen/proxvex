@@ -56,6 +56,7 @@ github-runner=ubuntupve
 ghcr-registry-mirror=ubuntupve
 docker-mirror-test=ubuntupve
 zot-mirror=ubuntupve
+esphome=ubuntupve
 wolproxy=pve1.cluster
 "
 
@@ -105,7 +106,7 @@ SMTP_PASSWORD="${SMTP_PASSWORD:-}"
 print_steps() {
   cat <<STEPS
   Steps:
-    1   DNS + NAT on router
+    1   DNS on router
     2   Verify deployer is reachable
     3   Copy production files to PVE host
     4   Set project defaults (v1)
@@ -127,6 +128,9 @@ print_steps() {
     20  Deploy gptwol (Wake-on-LAN UI + M2M API via addon-oauth2-proxy)
     21  Deploy wolproxy (stable JSON API for WoL+ping, M2M Bearer JWT)
     22  Create runner-wake-svc Machine User in Zitadel (outputs WAKE_CLIENT_ID/SECRET for GitHub Actions)
+    23  Deploy zigbee2mqtt (Zigbee coordinator: Sonoff ZBDongle on ttyACM0)
+    24  Deploy esphome (target: $(host_for_app esphome)) [HTTP-only dashboard, no native HTTPS]
+    25  Deploy homebridge (HomeKit bridge, HTTP-only Config UI X :8581, mDNS pairing)
 STEPS
 }
 
@@ -597,7 +601,7 @@ echo ""
 # Step 1: DNS on router
 # ================================================================
 if should_run 1; then
-  banner 1 "DNS + NAT on router"
+  banner 1 "DNS on router"
   scp -o StrictHostKeyChecking=no "$SCRIPT_DIR/dns.sh" "root@${ROUTER_HOST}:dns.sh"
   router_ssh "sh dns.sh"
 fi
@@ -1093,6 +1097,49 @@ if should_run 22; then
 fi
 
 # ================================================================
+# Step 23: Deploy zigbee2mqtt
+#   Bridges the Sonoff ZBDongle Zigbee coordinator to MQTT. The host serial
+#   port (/dev/serial/by-id/usb-ITEAD_SONOFF_Zigbee_3.0_USB_Dongle_Plus_V2_…,
+#   ttyACM0) is deliberately a DIFFERENT stick than modbus2mqtt's 1a86 CH340
+#   (ttyUSB0) — both live on the same PVE host. Native HTTPS (addon-ssl) plus
+#   mTLS to eclipse-mosquitto (addon-mtls). MQTT broker URL + serial port are
+#   pre-seeded via extra_envs (ZIGBEE2MQTT_CONFIG_*) so the bridge comes up
+#   already configured; everything else is tuned via the web frontend.
+#   No OIDC — zigbee2mqtt's frontend has no OpenID Connect support.
+# ================================================================
+if should_run 23; then
+  banner 23 "Deploy zigbee2mqtt"
+  "$SCRIPT_DIR/deploy.sh" --host "$(host_for_app zigbee2mqtt)" zigbee2mqtt.json
+fi
+
+# ================================================================
+# Step 24: Deploy esphome (target: ubuntupve)
+#   ESPHome dashboard for building/flashing ESP firmware. Deployed to
+#   ubuntupve (see APP_HOST_MAP) rather than the default PVE host. The
+#   standalone dashboard has no native HTTPS, so it is served over plain
+#   HTTP on :6052 — put a reverse proxy in front if TLS is required. To
+#   flash devices over USB on the host, add host_device_path to esphome.json.
+# ================================================================
+if should_run 24; then
+  banner 24 "Deploy esphome ($(host_for_app esphome))"
+  "$SCRIPT_DIR/deploy.sh" --host "$(host_for_app esphome)" esphome.json
+fi
+
+# ================================================================
+# Step 25: Deploy homebridge
+#   HomeKit bridge with the Config UI X web frontend. Deployed to the default
+#   PVE host (on the LAN, so HomeKit's mDNS/Bonjour advertisement reaches the
+#   Apple Home app without the network_mode=host workaround Docker needs).
+#   Config UI X has no native HTTPS, so it is served over plain HTTP on :8581 —
+#   put a reverse proxy in front if TLS is required. Pair the bridge from the
+#   Home app using the PIN shown on the Config UI X status page.
+# ================================================================
+if should_run 25; then
+  banner 25 "Deploy homebridge ($(host_for_app homebridge))"
+  "$SCRIPT_DIR/deploy.sh" --host "$(host_for_app homebridge)" homebridge.json
+fi
+
+# ================================================================
 # Done
 # ================================================================
 echo ""
@@ -1107,11 +1154,14 @@ echo "  Zitadel:     192.168.4.42 (auth.ohnewarum.de)"
 echo "  Gitea:       192.168.4.43 (git.ohnewarum.de)"
 echo "  Mosquitto:   192.168.4.44 (mqtt.ohnewarum.de)"
 echo "  Registry:    192.168.4.45 (docker-registry-mirror, pve1)"
-echo "  Node-RED:    192.168.4.46 (node-red.local)"
-echo "  Modbus2MQTT: 192.168.4.47 (modbus2mqtt.local)"
+echo "  Node-RED:    192.168.4.46 (node-red)"
+echo "  Modbus2MQTT: 192.168.4.47 (modbus2mqtt, serial: 1a86 CH340 / ttyUSB0)"
+echo "  Zigbee2MQTT: zigbee2mqtt (auto-IP, serial: Sonoff ZBDongle / ttyACM0)"
 echo "  GHCR Mirror: 192.168.4.48 (ghcr-mirror, ubuntupve, test infra)"
 echo "  Test Mirror: 192.168.4.49 (docker-mirror-test, ubuntupve, test infra)"
 echo "  Zot Mirror:  192.168.4.50 (zot-mirror, ubuntupve, ghcr.io pull-through)"
+echo "  ESPHome:     esphome (ubuntupve, auto-IP, HTTP dashboard :6052)"
+echo "  Homebridge:  homebridge (auto-IP, HTTP Config UI X :8581, HomeKit mDNS)"
 echo "  gptwol:      LAN: http://gptwol:5000  (Browser OIDC login)"
 echo "               Public: https://gptwol.ohnewarum.de/api/wake/<host>  (Bearer JWT only)"
 echo "  wolproxy:    LAN: http://wolproxy:5000  (no UI, JSON API)"

@@ -3,6 +3,20 @@
     <mat-icon>verified_user</mat-icon>
     Certificates &amp; Maintenance
   </button>
+  @if (deletableInstallations.length > 0 || deleting) {
+    <button mat-stroked-button class="cleanup-button" [disabled]="deleting"
+      (click)="deleteStoppedAndMigrated()"
+      matTooltip="Löscht alle gestoppten/migrierten Container sofort (pct destroy --purge)"
+      matTooltipPosition="above">
+      <mat-icon>delete_sweep</mat-icon>
+      {{ deleting
+         ? (deleteProgress ? 'Lösche ' + deleteProgress.done + '/' + deleteProgress.total + ' …' : 'Lösche …')
+         : deletableInstallations.length + ' gestoppte/migrierte löschen' }}
+    </button>
+  }
+  @if (deleteStatus) {
+    <span class="cleanup-status">{{ deleteStatus }}</span>
+  }
 </div>
 
 <app-card-grid

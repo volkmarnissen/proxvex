@@ -305,6 +305,7 @@ export enum ApiUri {
   ApplicationTags = "/api/applications/tags",
   LocalApplicationIds = "/api/applications/local/ids",
   Installations = "/api/:veContext/installations",
+  InstallationsDestroy = "/api/:veContext/installations/destroy",
   InstallationVersions = "/api/:veContext/installations/:vmId/versions",
   ContainerConfig = "/api/:veContext/container-config/:vmId",
   TemplateDetailsForApplication = "/api/:veContext/template-details/:application/:task",

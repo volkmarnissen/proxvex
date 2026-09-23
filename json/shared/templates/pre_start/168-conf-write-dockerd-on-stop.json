@@ -1,0 +1,16 @@
+{
+  "execute_on": "ve",
+  "name": "Write Dockerd On-Stop Script",
+  "description": "Deploys an on-stop hook that shuts down Docker containers and dockerd before the LXC container stops. The hook lives in /etc/proxvex/on_stop.d/ and is invoked synchronously by the pre-stop Proxmox hookscript.",
+  "parameters": [
+    "hostname",
+    "vm_id"
+  ],
+  "commands": [
+    {
+      "script": "conf-write-dockerd-on-stop.sh",
+      "library": "pve-common.sh",
+      "description": "Write dockerd on-stop drop-in script to host-side proxvex volume"
+    }
+  ]
+}

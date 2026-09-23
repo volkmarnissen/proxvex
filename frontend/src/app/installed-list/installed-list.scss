@@ -4,8 +4,22 @@
 .installed-list-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   padding: 0.5rem 1rem;
   gap: 0.5rem;
+}
+
+.cleanup-button {
+  color: #c62828;
+
+  &[disabled] {
+    color: rgba(198, 40, 40, 0.5);
+  }
+}
+
+.cleanup-status {
+  font-size: 0.85rem;
+  color: #616161;
 }
 
 .split-button {

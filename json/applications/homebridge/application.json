@@ -1,0 +1,30 @@
+{
+  "name": "Homebridge",
+  "description": "Lightweight HomeKit bridge that exposes non-HomeKit smart-home devices to Apple Home via a huge plugin ecosystem. Includes the Homebridge Config UI X web interface for configuration, plugin management and logs. Runs as an LXC container on Proxmox with optional native HTTPS for the web UI; HomeKit accessories are discovered on the LAN over mDNS/Bonjour.",
+  "extends": "oci-image",
+  "icon": "icon.png",
+  "tags": ["automation", "iot"],
+  "supported_addons": ["addon-ssl"],
+  "properties": [
+    { "id": "hostname", "default": "homebridge" },
+    { "id": "disk_size", "default": "4" },
+    { "id": "volumes", "default": "config=/homebridge,size=4G\ncerts=/ssl" },
+    { "id": "envs", "default": "TZ=Europe/Berlin\nHOMEBRIDGE_CONFIG_UI_PORT=8581" },
+    { "id": "rootfs_storage", "default": "local-zfs" },
+    { "id": "volume_storage", "default": "local-zfs", "required": true },
+    { "id": "oci_image", "value": "homebridge/homebridge:{{oci_image_tag}}" },
+    { "id": "wait_for_network", "value": "true" },
+    { "id": "uid", "value": "0" },
+    { "id": "gid", "value": "0" },
+    { "id": "username", "value": "root" },
+    { "id": "http_port", "value": "8581" },
+    { "id": "local_https_port", "value": "8581" },
+    { "id": "volume_backup", "value": "true" },
+    { "id": "ssl_mode", "value": "native" },
+    { "id": "ssl.needs_server_cert", "value": "true" },
+    { "id": "ssl.needs_ca_cert", "value": "true" }
+  ],
+  "url": "https://homebridge.io/",
+  "documentation": "https://github.com/homebridge/homebridge/wiki",
+  "source": "https://github.com/homebridge/docker-homebridge"
+}

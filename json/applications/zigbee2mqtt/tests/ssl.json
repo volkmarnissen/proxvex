@@ -1,0 +1,13 @@
+{
+  "selectedAddons": [
+    "addon-ssl"
+  ],
+  "params": [
+    {
+      "name": "oci_image_tag",
+      "value": "latest"
+    }
+  ],
+  "wait_seconds": 30,
+  "description": "Install zigbee2mqtt with native HTTPS (addon-ssl). The frontend serves TLS on port 8080 using the managed server cert wired in via ZIGBEE2MQTT_CONFIG_FRONTEND_SSL_CERT/KEY."
+}

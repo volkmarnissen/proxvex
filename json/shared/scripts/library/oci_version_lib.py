@@ -452,15 +452,47 @@ class SkopeoResult:
 
 def run_skopeo(cmd: list[str], *, timeout: int,
                image_ref: Optional[str] = None,
-               probe_on_failure: bool = True) -> SkopeoResult:
+               probe_on_failure: bool = True,
+               heartbeat_seconds: int = 30) -> SkopeoResult:
     """Run a `skopeo ...` command, gather probe evidence on non-zero exit.
 
     The caller decides what to do with the exit code — this function is
     pure observation, not control flow. On failure, probes are run against
     the image_ref (extracted from the command if not given) and skopeo's
-    own stderr (used to spot a named failing blob)."""
+    own stderr (used to spot a named failing blob).
+
+    Heartbeat: `skopeo copy` of a single large blob (e.g. an ~1GB Playwright
+    layer pulled from `mcr.microsoft.com`) can produce no stdout/stderr for
+    several minutes while a download is in progress. The livetest runner's
+    watchdog kills any subprocess that goes silent for 120s, so we emit a
+    short stderr heartbeat every `heartbeat_seconds` while skopeo is still
+    running. The heartbeat thread is daemonised and torn down on exit."""
+    import os
+    import threading
+    import time as _time
+
     if cmd and cmd[0] != "skopeo":
         cmd = ["skopeo", *cmd]
+
+    started = _time.monotonic()
+    done = threading.Event()
+
+    def _heartbeat() -> None:
+        # Wait `heartbeat_seconds` before first beat — skopeo usually emits
+        # something within a few seconds; only kick in if it actually goes
+        # silent.
+        while not done.wait(heartbeat_seconds):
+            elapsed = int(_time.monotonic() - started)
+            ref = image_ref or _last_positional_image(cmd) or "skopeo"
+            try:
+                sys.stderr.write(f"skopeo {ref}: still running ({elapsed}s elapsed, pid={os.getpid()})\n")
+                sys.stderr.flush()
+            except Exception:
+                # never let a heartbeat failure kill the run
+                return
+
+    hb = threading.Thread(target=_heartbeat, daemon=True)
+    hb.start()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         stdout, stderr, code = proc.stdout, proc.stderr, proc.returncode
@@ -470,7 +502,10 @@ def run_skopeo(cmd: list[str], *, timeout: int,
         stderr = (stderr + f"\nskopeo timed out after {timeout}s").lstrip("\n")
         code = 124
     except FileNotFoundError:
+        done.set()
         return SkopeoResult(cmd, "", "skopeo: executable not found on PATH", 127)
+    finally:
+        done.set()
 
     probes: list[dict] = []
     if probe_on_failure and code != 0:

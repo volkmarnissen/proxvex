@@ -14,11 +14,12 @@
     }
   ],
   "task": "reconfigure",
-  "stack_name": "default",
+  "stack_name": "plain",
+  "run_in_ve": true,
   "depends_on": [
     "proxvex/plain",
     "zitadel/default"
   ],
   "wait_seconds": 30,
-  "description": "Reconfigure: enable SSL and OIDC addon on existing deployer container"
+  "description": "Reconfigure: enable SSL and OIDC addon on existing deployer container. stack_name='plain' matches the baseline scenario (proxvex/plain) so addon-oidc's stack-typed dependency resolution finds the matching oidc_plain stack."
 }

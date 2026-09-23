@@ -1,0 +1,9 @@
+{
+  "application": "esphome",
+  "task": "installation",
+  "params": [
+    { "name": "vm_id_start", "value": 600 },
+    { "name": "oci_image_tag", "value": "latest" }
+  ],
+  "selectedAddons": []
+}

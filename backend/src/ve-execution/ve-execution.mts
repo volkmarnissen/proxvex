@@ -11,7 +11,6 @@ import {
   IOutput,
   VeExecutionConstants,
   getNextMessageIndex,
-  resetMessageIndex,
   ExecutionMode,
   determineExecutionMode,
 } from "./ve-execution-constants.mjs";
@@ -630,14 +629,21 @@ export class VeExecution extends EventEmitter {
     // Initialize msgIndex based on startIdx: each command (including skipped and properties) produces one message
     // This ensures properties commands get the correct index even after a restart
     // Note: We use msgIndex (not getNextMessageIndex) for properties commands to ensure consistency
-    // Reset global message index to startIdx to keep it in sync with msgIndex
-    if (restartInfo) {
-      resetMessageIndex();
-      // Set global message index to startIdx so getNextMessageIndex() returns correct values
-      for (let j = 0; j < startIdx; j++) {
-        getNextMessageIndex();
-      }
-    }
+    //
+    // The global message index is deliberately NOT reset here. It used to be
+    // (resetMessageIndex() + pumping it up to startIdx), which "worked" only
+    // as long as this task was alone in the process: the counter is shared
+    // by every concurrent execution, and dragging it down to this task's
+    // command position made every OTHER in-flight task emit frames with
+    // indexes BELOW what its delta-polling CLI had already seen — those
+    // CLIs then never received another frame (server filters index > since)
+    // and timed out on tasks that had long completed. Every upgrade/
+    // reconfigure goes through a restart (900-replace-ct), so under
+    // livetest --all this froze whole batches. The cost of not resetting:
+    // frames emitted after a restart carry fresh, higher indexes instead of
+    // continuing the pre-restart numbering — deduplication by index no
+    // longer merges them, which is cosmetic, while the reset was corrupting
+    // correctness.
     let msgIndex = startIdx;
     outerloop: for (let i = startIdx; i < this.commands.length; ++i) {
       const cmd = this.commands[i];

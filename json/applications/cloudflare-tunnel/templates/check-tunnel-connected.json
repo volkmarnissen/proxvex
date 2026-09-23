@@ -1,0 +1,17 @@
+{
+  "execute_on": "ve",
+  "name": "Check Tunnel Connected",
+  "description": "Greps the cloudflared container's docker logs (via pct exec on the PVE host) for 'Registered tunnel connection', confirming the connector authenticated and reached the Cloudflare edge. This is the positive health signal — the framework's docker-services check only reports the service as 'running', which restart: unless-stopped would also show during a crash-loop.",
+  "parameters": [
+    "vm_id"
+  ],
+  "commands": [
+    {
+      "name": "Check tunnel registered",
+      "script": "check-tunnel-connected.sh",
+      "outputs": [
+        "tunnel_connected"
+      ]
+    }
+  ]
+}

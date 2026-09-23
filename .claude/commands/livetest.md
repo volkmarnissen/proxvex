@@ -154,9 +154,20 @@ The skill supports two execution modes:
 ```sh
 # Mode + instance
 CONFIG_INSTANCE=""             # populated from --config; empty means local-backend mode
-case "${DEPLOYER_PORT:-3201}" in
-  3301) AUTO_INSTANCE=yellow ;;
-  *)    AUTO_INSTANCE=green  ;;
+# Auto-detect the instance from the workspace directory first: a `*-yellow`
+# worktree → yellow, `*-green` → green. DEPLOYER_PORT is not always exported
+# per worktree (e.g. the proxvex-yellow workspace), so the directory name is
+# the authoritative signal. Fall back to the DEPLOYER_PORT env only when the
+# path carries no instance suffix (e.g. the bare `proxvex` checkout).
+case "$(pwd)" in
+  *-yellow|*-yellow/*) AUTO_INSTANCE=yellow ;;
+  *-green|*-green/*)   AUTO_INSTANCE=green  ;;
+  *)
+    case "${DEPLOYER_PORT:-3201}" in
+      3301) AUTO_INSTANCE=yellow ;;
+      *)    AUTO_INSTANCE=green  ;;
+    esac
+    ;;
 esac
 # --all (and @file curated runs) default to nested-deployer mode so the
 # suite always tests against the deployer LXC built from the current
@@ -178,7 +189,14 @@ if [ -n "$CONFIG_INSTANCE" ]; then
     PORTS_DEPLOYER=$(jq -r '.ports.deployer' e2e/config.json)
     DEPLOYER_PORT=$((PORTS_DEPLOYER + PORT_OFFSET))
 else
-    DEPLOYER_PORT="${DEPLOYER_PORT:-$(jq -r ".instances.${INSTANCE}.deployerPort" e2e/config.json | sed 's/.*:-\([0-9]*\)}/\1/')}"
+    # Local-backend mode: prefer an explicitly exported DEPLOYER_PORT, else the
+    # per-instance convention (green 3201, yellow 3301). config.json's
+    # instances.<i>.deployerPort can be null (yellow), so don't depend on it.
+    case "$INSTANCE" in
+      yellow) _default_deployer_port=3301 ;;
+      *)      _default_deployer_port=3201 ;;
+    esac
+    DEPLOYER_PORT="${DEPLOYER_PORT:-$_default_deployer_port}"
 fi
 ```
 
@@ -287,7 +305,14 @@ Throughout the rest of the skill, substitute `$VMID`, `$DEPLOYER_PORT`, `$PVE_SS
     long `--all` / `@file.lst` runs in background mode, this is the
     primary progress signal alongside the STDERR worker timeline.
 
-7. **Report results** — summarize pass/fail status. Always mention the debug-bundle location: `livetest-results/$(ls -1t livetest-results/ | head -1)/`. For failed scenarios, the bundle's `livetest-index.md` is the first place the user (or fix loop) should look. The same directory contains `run-overview.md` with the final per-scenario table and the persistent STDERR worker timeline (if redirected via `2> worker.log`).
+7. **Report results** — summarize pass/fail status. Always mention the debug-bundle location: `livetest-results/$(ls -1t livetest-results/ | head -1)/`. The directory also contains `run-overview.md` with the final per-scenario table and the persistent STDERR worker timeline (if redirected via `2> worker.log`).
+
+   **On ANY failure (every run, not just `--fix`): read the diagnostic data BEFORE naming a cause.** Do not conclude a root cause — and never dismiss a failure as "infra/environmental/pre-existing/not my code" — from the runner's console output alone. For each failed scenario under `livetest-results/<runId>/<scenarioId>/`, in order:
+   - **`host-diagnostics.md` → `cli-output`** — the actual error text the deployer/CLI returned (e.g. `VE host 'X' not found`, a `pct` error). This is usually the real failure and is easy to miss.
+   - **`scripts/*.meta.json`** — `jq 'select(.exitCode!=null and .exitCode!=0) | {index,command,exitCode,executeOn}'` to find which script failed (if any). An empty `scripts/` means the failure was at dispatch, *before* any script ran — read `host-diagnostics.md` / `test-result.md`'s `error_message`.
+   - **`scripts/<NN>-<slug>.md`** — the failing script's chronological trace.
+
+   Only state a root cause that is backed by a specific line in the diagnostic data; quote it. The richer `--fix` analysis flow below is the same idea in depth.
 
 8. **If `--fix` and tests failed**: Enter the fix loop (see below).
 

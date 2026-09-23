@@ -147,7 +147,9 @@ export class CertificateAuthorityService implements ICaProvider {
 
   async getDomainSuffix(veContextKey: string): Promise<string> {
     const stored = this.contextManager.get<string>(this.domainSuffixKey(veContextKey));
-    return stored || ".local";
+    // Use ?? (not ||) so an explicitly stored empty string means "bare names"
+    // (cert CN = hostname, no suffix). Only an unset value falls back to .local.
+    return stored ?? ".local";
   }
 
   async setDomainSuffix(veContextKey: string, suffix: string): Promise<void> {

@@ -24,10 +24,12 @@
     ],
     "pre_start": [
       "108-host-push-ca-to-container.json",
+      "109-host-install-init-wrapper.json",
       "107-conf-oci-lxc-configuration.json",
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [
+      "351-post-emit-endpoint-config.json",
       "100-conf-unmount-volumes.json"
     ],
     "start": [
@@ -50,10 +52,12 @@
     "pre_start": [
       "108-host-push-ca-to-container.json",
       "101-conf-restore-settings.json",
+      "109-host-install-init-wrapper.json",
       "107-conf-oci-lxc-configuration.json",
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [
+      "351-post-emit-endpoint-config.json",
       "100-conf-unmount-volumes.json"
     ],
     "start": [
@@ -81,6 +85,7 @@
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [
+      "351-post-emit-endpoint-config.json",
       "100-conf-unmount-volumes.json"
     ],
     "start": [
