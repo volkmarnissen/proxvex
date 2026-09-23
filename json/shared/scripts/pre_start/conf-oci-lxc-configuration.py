@@ -15,10 +15,6 @@ envs_str = """{{ envs }}"""
 # envs string (the frontend edits the full string directly, so this channel
 # is CLI-only in practice). Empty / NOT_DEFINED → no-op.
 extra_envs_str = """{{ extra_envs }}"""
-# Lowest port a non-root process in the container may bind. Set → the app runs
-# behind the init wrapper that 109-host-install-init-wrapper installed.
-port_start = "{{ unprivileged_port_start }}"
-INIT_WRAPPER = "/usr/local/sbin/proxvex-init"
 
 if not vm_id or vm_id == "NOT_DEFINED":
     print("Error: vm_id is not set", file=sys.stderr)
@@ -108,14 +104,6 @@ if initial_command and initial_command != "NOT_DEFINED":
         template = string.Template(initial_command)
         resolved_command = template.safe_substitute(env_dict)
         
-        # An app that is PID 1 and runs as a non-root uid cannot bind ports
-        # below net.ipv4.ip_unprivileged_port_start. When the deploy asks for a
-        # lower start, 109-host-install-init-wrapper put /usr/local/sbin/
-        # proxvex-init into the rootfs: it raises the range and execs the real
-        # command. Prepending it here keeps the original argv intact.
-        if port_start and port_start != "NOT_DEFINED":
-            resolved_command = f"{INIT_WRAPPER} {resolved_command}"
-
         # Remove existing init command lines first, otherwise a second run
         # (upgrade, reconfigure) appends a duplicate. Both spellings: the key
         # is written as lxc.init.cmd, older configs may carry lxc.init_cmd.

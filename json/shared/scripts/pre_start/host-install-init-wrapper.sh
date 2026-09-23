@@ -15,11 +15,19 @@
 # is rejected as well. Inside the container there is no "before the app"
 # either: the app is the first process.
 #
-# SO: wrap init. This script writes a tiny wrapper into the rootfs; the OCI
-# configuration step (conf-oci-lxc-configuration.py) points lxc.init.cmd at
-# it, keeping the original command as its arguments. The wrapper raises the
-# port range and then `exec "$@"` — no extra process stays behind, and it
-# happens on every start, not just the deploy.
+# SO: wrap init. This script writes a tiny wrapper into the rootfs AND points
+# lxc.init.cmd at it, keeping the original command as its arguments. The
+# wrapper raises the port range and then `exec "$@"` — no extra process stays
+# behind, and it happens on every start, not just the deploy.
+#
+# Both halves live here on purpose: a reconfigure runs neither
+# 107-conf-oci-lxc-configuration nor any other init step, but it DOES re-run
+# the ssl addon (159-conf-enable-ssl-app), which moves the app to the new
+# port. Split across two templates, a reconfigure would hand the app a
+# privileged port without the wrapper — it would fail to bind and the
+# container would come up broken. So this template owns the whole feature and
+# is wired into installation, upgrade and reconfigure alike; it must run
+# AFTER 107 wrote lxc.init.cmd.
 #
 # File capabilities (setcap cap_net_bind_service, parameter
 # bind_privileged_port) are not an alternative here: they need libcap inside
@@ -121,4 +129,38 @@ EOF
 chmod 0755 "$TARGET"
 
 echo "Installed init wrapper /${WRAPPER_RELPATH} (ip_unprivileged_port_start=$PORT_START)" >&2
+
+# Point lxc.init.cmd at the wrapper, keeping the original command as its
+# arguments. Idempotent: a config that already starts with the wrapper (a
+# second run, or the clone a reconfigure works on) is left alone.
+CONF_FILE="/etc/pve/lxc/${VMID}.conf"
+if [ ! -f "$CONF_FILE" ]; then
+  echo "Error: $CONF_FILE not found" >&2
+  exit 1
+fi
+
+CURRENT=$(sed -n 's/^lxc\.init\.cmd:[[:space:]]*//p' "$CONF_FILE" | tail -n1)
+if [ -z "$CURRENT" ]; then
+  # No init command at all: the app then runs whatever the rootfs uses as
+  # init, and this template cannot wrap it. Deliberately not fatal — the
+  # wrapper is in place, only unused.
+  echo "Warning: no lxc.init.cmd in $CONF_FILE — wrapper installed but not wired" >&2
+elif [ "${CURRENT#/$WRAPPER_RELPATH}" != "$CURRENT" ]; then
+  echo "lxc.init.cmd already wrapped: $CURRENT" >&2
+else
+  TMP="${CONF_FILE}.proxvex-init.$$"
+  # awk over sed: the command contains slashes, and only the last matching
+  # line is authoritative (see the duplicate-line history in 107).
+  awk -v wrapper="/$WRAPPER_RELPATH" '
+    /^lxc\.init\.cmd:[[:space:]]*/ {
+      cmd = $0
+      sub(/^lxc\.init\.cmd:[[:space:]]*/, "", cmd)
+      print "lxc.init.cmd: " wrapper " " cmd
+      next
+    }
+    { print }
+  ' "$CONF_FILE" > "$TMP" && mv "$TMP" "$CONF_FILE"
+  echo "Set lxc.init.cmd: /$WRAPPER_RELPATH $CURRENT" >&2
+fi
+
 echo '[]'

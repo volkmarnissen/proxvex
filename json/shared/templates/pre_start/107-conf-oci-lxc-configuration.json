@@ -8,8 +8,7 @@
     "initial_command",
     "envs",
     "extra_envs",
-    "wait_for_network",
-    "unprivileged_port_start"
+    "wait_for_network"
   ],
   "commands": [
     {

@@ -2,7 +2,11 @@
   "name": "oci-image",
   "description": "Base application for OCI image based services",
   "icon": "icon.png",
-  "supported_addons": ["addon-ssl", "addon-acme", "samba-shares"],
+  "supported_addons": [
+    "addon-ssl",
+    "addon-acme",
+    "samba-shares"
+  ],
   "properties": [
     {
       "id": "oidc_redirect_uri",
@@ -18,14 +22,23 @@
       "011-host-get-oci-image.json"
     ],
     "create_ct": [
-      { "name": "050-set-project-parameters.json", "category": "create_ct" },
-      { "name": "185-host-resolve-dependency-hosts.json", "category": "pre_start" },
-      { "name": "100-conf-create-configure-lxc.json", "category": "pre_start" }
+      {
+        "name": "050-set-project-parameters.json",
+        "category": "create_ct"
+      },
+      {
+        "name": "185-host-resolve-dependency-hosts.json",
+        "category": "pre_start"
+      },
+      {
+        "name": "100-conf-create-configure-lxc.json",
+        "category": "pre_start"
+      }
     ],
     "pre_start": [
       "108-host-push-ca-to-container.json",
-      "109-host-install-init-wrapper.json",
       "107-conf-oci-lxc-configuration.json",
+      "109-host-install-init-wrapper.json",
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [
@@ -46,14 +59,20 @@
       "011-host-get-oci-image.json"
     ],
     "create_ct": [
-      { "name": "050-set-project-parameters.json", "category": "create_ct" },
-      { "name": "100-conf-create-configure-lxc.json", "category": "pre_start" }
+      {
+        "name": "050-set-project-parameters.json",
+        "category": "create_ct"
+      },
+      {
+        "name": "100-conf-create-configure-lxc.json",
+        "category": "pre_start"
+      }
     ],
     "pre_start": [
       "108-host-push-ca-to-container.json",
       "101-conf-restore-settings.json",
-      "109-host-install-init-wrapper.json",
       "107-conf-oci-lxc-configuration.json",
+      "109-host-install-init-wrapper.json",
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [
@@ -82,6 +101,7 @@
       "108-host-push-ca-to-container.json",
       "150-conf-create-storage-volumes-for-lxc.json",
       "185-host-resolve-dependency-hosts.json",
+      "109-host-install-init-wrapper.json",
       "190-host-write-lxc-notes.json"
     ],
     "pre_start_finalize": [

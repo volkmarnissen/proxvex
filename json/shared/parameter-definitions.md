@@ -5118,8 +5118,10 @@ Proxmox rejects raw `lxc.sysctl.*` keys ("unable to parse config") and drops the
 on the next config write, and there is no step inside the container before the
 app, because the app is the first process. Setting this parameter therefore makes
 `109-host-install-init-wrapper` write `/usr/local/sbin/proxvex-init` into the
-rootfs and `conf-oci-lxc-configuration.py` point `lxc.init.cmd` at it; the wrapper
-lowers the limit and then `exec`s the original command.
+rootfs and point `lxc.init.cmd` at it; the wrapper lowers the limit and then
+`exec`s the original command. That template runs in installation, upgrade **and**
+reconfigure, because a reconfigure re-runs the ssl addon and would otherwise move
+the application to a privileged port without the wrapper in place.
 
 Ports below the value stay protected. In a single-application container this is
 barely a relaxation: the only user of the namespace is the app itself.
